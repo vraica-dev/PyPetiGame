@@ -12,7 +12,7 @@ class PlayerObj:
         self.points += 1
 
     def add_special_points(self):
-        self.points += 1 # further updates may come
+        self.points += 3
 
     def reset_points(self):
         self.points = 0
