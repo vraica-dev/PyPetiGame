@@ -130,6 +130,7 @@ def test_frenzy_doubles_points(pg):
     pg.handle_eat(t)
     assert pg.player.points == 2
     pg.frenzy_timer = 0.0
+    pg.reset_combo()  # isolate frenzy-off scoring from the combo streak
     t2 = pg.treats[0]
     t2.kind = 'good'
     t2.points = 1
@@ -166,13 +167,13 @@ def test_decoy_disguised_then_reveals(pg):
     assert pg.treat.kind == 'bad'  # rotten all along
     assert pg.treat.looks_golden()  # ...but looks golden
     assert pg.treat.selected_skin == 'treats_2.png'
-    # still disguised after half a second
+    # still disguised after half a second (dt is in 60-FPS frames)
     pg.treat.pos_y = 0
-    pg.treat.update(dt=0.5)
+    pg.treat.update(dt=30.0)
     assert pg.treat.disguised
     assert pg.treat.looks_golden()
-    # reveals after the 1s window
-    pg.treat.update(dt=0.6)
+    # reveals after the 1s window (30 + 35 frames > 60 frames = 1s)
+    pg.treat.update(dt=35.0)
     assert not pg.treat.disguised
     assert pg.treat.selected_skin == 'treats_bad.png'
     assert pg.treat.is_rotten()
@@ -277,3 +278,49 @@ def test_golden_window_can_yield_powerup(pg):
             seen_power = True
             assert pg.treat.power in ('magnet', 'shield', 'slowmo', 'frenzy')
     assert seen_power  # golden-only power-ups actually appear
+
+
+# -- combined Phase 0/1/2: combo x frenzy x power-up x juice --------------
+
+def test_combo_frenzy_powerup_stack_with_juice(pg):
+    """Combo multiplier and frenzy doubling stack; power-ups keep the
+    streak alive and every catch emits a juice burst (dt-safe)."""
+    pg.reset_game()
+    pg.cat.set_graph()
+    bursts0 = len(pg.bursts)
+    t = pg.treats[0]
+
+    def eat(kind, points, power=None):
+        if power is not None:
+            t.set_powerup(power)
+        else:
+            t.set_treat_pic()
+            t.kind = kind
+            t.points = points
+            t.power = None
+            t.fast = False
+            t.decoy = False
+        t.pos_x, t.pos_y = pg.cat.pos_x, pg.cat.pos_y
+        pg.cat.spawn()
+        t.spawn()
+        pg.handle_eat(t)
+
+    eat('good', 1)  # combo 1 -> x1, +1
+    assert pg.player.points == 1
+    eat('good', 1)  # combo 2 -> x2, +2
+    assert pg.player.points == 3
+    pg.frenzy_timer = 8.0
+    eat('good', 1)  # combo 3 -> x3, frenzy x2, +6
+    assert pg.player.points == 9
+    eat('good', 1, power='magnet')  # power-up: streak -> 4, +1*x4*2
+    assert pg.magnet_timer > 0
+    assert pg.combo == 4
+    assert pg.player.points == 9 + 8
+    assert len(pg.bursts) == bursts0 + 4  # one burst per catch
+    # dt applied to all falls: slowmo is off, so full speed
+    y = t.pos_y = 0.0
+    t.vy = 6
+    t.fast = False
+    t.decoy = False
+    t.update(dt=2.0, speed_scale=pg.speed_scale())
+    assert t.pos_y == y + 12.0

@@ -1,8 +1,14 @@
+import math
 import random
 
 import pygame
 
 TREAT_SIZE = 90
+
+# Fair spawn band: keeps treats away from screen edges so the cat can
+# always reach them. Multi-treat spacing (no impossible rotten pairs)
+# is deferred to Phase 2 when concurrent treats land.
+SPAWN_MARGIN = 80
 
 # (image, kind, points). Bad treats cost a life instead of scoring.
 SKINS = [
@@ -51,10 +57,10 @@ class TreatObj:
     def __init__(self, w=1920, h=1080):
         self.w = w
         self.h = h
-        self.pos_x = random.randint(40, w - 40)
+        self.pos_x = self._fair_x(w)
         self.pos_y = -40  # start above the screen, falls in
 
-        self.vy = 5  # fall speed, px/frame; raised by the game as you score
+        self.vy = 5  # fall speed, px per 60-FPS frame; raised as you score
 
         self.selected_skin = None
         self.kind = 'good'
@@ -76,6 +82,15 @@ class TreatObj:
 
         self.treatimg = None
         self.treatrect = None
+        self.base_img = None  # untransformed sprite; pulse scales from it
+        self.missed_kind = None  # kind of the treat that last fell off-screen
+
+    def _fair_x(self, w=None):
+        w = self.w if w is None else w
+        lo, hi = SPAWN_MARGIN, w - SPAWN_MARGIN
+        if hi < lo:  # tiny playfield fallback
+            lo, hi = 40, w - 40
+        return random.randint(lo, hi)
 
     # -- sprites ------------------------------------------------------
 
@@ -87,6 +102,8 @@ class TreatObj:
             overlay = pygame.Surface((TREAT_SIZE, TREAT_SIZE)).convert_alpha()
             overlay.fill((*tint, 90))
             img.blit(overlay, (0, 0), special_flags=pygame.BLEND_ADD)
+        # Untransformed sprite: pulse() scales from this each frame.
+        self.base_img = img
         return img
 
     def set_treat_pic(self, force_kind=None, force_power=None):
@@ -206,19 +223,20 @@ class TreatObj:
         self.h = h
 
     def rand_move(self, others=None, min_dist=MIN_SPAWN_DISTANCE):
-        """Respawn at the top with a random x (treat drops from the sky).
+        """Respawn at the top with a fair random x (treat drops from sky).
 
         ``others`` is an optional list of sibling treats; the new x is kept
         at least ``min_dist`` px away from each of them so concurrent treats
         never form an impossible pair. Retries a bounded number of times,
-        then keeps the best candidate found.
+        then keeps the best candidate found. Candidates come from
+        ``_fair_x`` so the SPAWN_MARGIN edge guarantee always holds.
         """
         others = [t for t in (others or []) if t is not self]
-        best_x = random.randint(40, self.w - 40)
+        best_x = self._fair_x()
         if others:
             best_score = -1
             for _ in range(20):
-                cand = random.randint(40, self.w - 40)
+                cand = self._fair_x()
                 nearest = min(abs(cand - t.pos_x) for t in others)
                 if nearest >= min_dist:
                     best_x = cand
@@ -226,22 +244,22 @@ class TreatObj:
                 if nearest > best_score:
                     best_score = nearest
                     best_x = cand
-        else:
-            best_x = random.randint(40, self.w - 40)
         self.pos_x = best_x
         self.pos_y = -40
         self.touched = False
         self.set_treat_pic()
 
-    def update(self, dt=1 / 60, speed_scale=1.0):
-        """Fall one step. Returns True if it fell off-screen (missed)."""
+    def update(self, dt=1.0, speed_scale=1.0):
+        """Fall one dt-scaled step (dt in 60-FPS frames, slowmo via
+        ``speed_scale``). Returns True if it fell off-screen (missed)."""
         # Decoy disguise ticks down in real seconds, then reveals as bad.
         if self.decoy and self.disguised:
-            self.decoy_timer -= dt
+            self.decoy_timer -= dt / 60.0  # dt frames -> seconds
             if self.decoy_timer <= 0:
                 self.reveal_decoy()
-        self.pos_y += self.effective_vy(speed_scale)
+        self.pos_y += self.effective_vy(speed_scale) * dt
         if self.pos_y > self.h + 60:
+            self.missed_kind = self.kind  # game reads this to reset combo
             # Snapshot for the near-miss bonus before respawning.
             self.last_miss_x = self.pos_x
             self.last_miss_kind = self.kind
@@ -249,6 +267,23 @@ class TreatObj:
             self.rand_move()
             return True
         return False
+
+    def pulse(self, time_s):
+        """Squash & stretch: gentle scale pulse while falling.
+
+        Headless-safe: pure transform.scale on an in-memory surface."""
+        if self.base_img is None or self.treatrect is None:
+            return
+        try:
+            s = 1.0 + 0.08 * math.sin(time_s * 6.0 + self.pos_x * 0.01)
+            w = max(1, int(TREAT_SIZE * s))
+            h = max(1, int(TREAT_SIZE * s))
+            center = self.treatrect.center
+            self.treatimg = pygame.transform.scale(self.base_img, (w, h))
+            self.treatrect = self.treatimg.get_rect()
+            self.treatrect.center = center
+        except pygame.error:
+            pass  # cosmetic only — never break the game
 
     def spawn(self):
         self.treatrect.center = self.pos_x, self.pos_y

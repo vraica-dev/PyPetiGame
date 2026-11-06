@@ -4,6 +4,7 @@ import sqlite3
 import pygame
 
 from objects.cursor_obj import CursorObj
+from objects.juice_obj import JuiceState, ParticleBurst
 from objects.petun_obj import PetunaObj
 from objects.player_obj import PlayerObj
 from objects.treats_obj import MIN_SPAWN_DISTANCE, TreatObj
@@ -33,6 +34,8 @@ class PetunaGame:
         self.game = pygame
         self.game_running = False
         self.app_running = True
+        self.paused = False
+        self.muted = False
         self.wndw_w = 1920
         self.wndw_h = 1080
 
@@ -81,6 +84,14 @@ class PetunaGame:
         self.score_value = 0
         self.game_over_reason = ''
 
+        # --- Phase 1 juice (feel only) ---
+        self.combo = 0  # consecutive good catches; miss/rotten resets
+        self.bursts = []  # active ParticleBurst list
+        self.juice = JuiceState()  # shake + flash timers
+        self._sfx = {}  # name -> pygame.mixer.Sound, guarded
+        self._sfx_channels = {}  # name -> dedicated mixer Channel
+        self._init_sfx()
+
     def init_db(self):
         conn = sqlite3.connect(self.db_path)
         conn.execute(
@@ -106,7 +117,9 @@ class PetunaGame:
         result = c.fetchone()
 
         if result:
-            c.execute(update_str, (score_p, name_p))
+            # BEST per player: only overwrite when the new score beats the old.
+            if score_p > result[1]:
+                c.execute(update_str, (score_p, name_p))
         else:
             c.execute(sql_str, (name_p, score_p))
 
@@ -125,13 +138,14 @@ class PetunaGame:
                 )
         return self._fonts[font_size]
 
-    def draw_info(self, text_line=None, x=None, y=None, font_size=25):
+    def draw_info(self, text_line=None, x=None, y=None, font_size=25,
+                  color=(255, 255, 255)):
         font = self.font(font_size)
         if text_line is None and x is None and y is None:
             render = font.render(f'Score: {self.score_value}', True, (255, 255, 255))
             self.screen.blit(render, (7, 7))
         else:
-            render = font.render(text_line, True, (255, 255, 255))
+            render = font.render(text_line, True, color)
             self.screen.blit(render, (x, y))
 
     def draw_centered(self, text, y, font_size=36):
@@ -161,23 +175,108 @@ class PetunaGame:
     def drawing(self):
         self.draw_info()
         self.draw_info(f'Lives: {self.player.lives}', 10, 50, 30)
+        if self.combo >= 2:
+            self.draw_info(
+                f'COMBO x{self.combo_mult()}', 10, 95, 34, (255, 215, 0)
+            )
         self.draw_right(
             f'Player: {self.player.player_name}', self.wndw_w - 20, 10, 30
         )
+        if self.muted:
+            # Stack below the combo readout so the two never overlap.
+            muted_y = 130 if self.combo >= 2 else 95
+            self.draw_info('MUTED (M)', 10, muted_y, 30)
 
-    def run_timmer(self):
+    def run_timmer(self, dt=1.0):
+        """Count the timer down. dt is in 60-FPS frames (1.0 ~= 1/60s)."""
         if self.timer > 0:
-            self.timer -= 1 / 60
+            self.timer -= dt / 60
             if self.timer < 0:
                 self.timer = 0
             return self.timer
         else:
             return 0
 
+    def toggle_pause(self):
+        """Flip the pause flag; the run_game loop renders the overlay."""
+        self.paused = not self.paused
+        return self.paused
+
+    def toggle_mute(self):
+        """Flip mute; silences music mixer, HUD shows MUTED indicator."""
+        self.muted = not self.muted
+        try:
+            self.game.mixer.music.set_volume(0.0 if self.muted else 1.0)
+        except pygame.error as e:
+            print(f'[warn] mute toggle failed: {e}')
+        return self.muted
+
+    def draw_pause_overlay(self):
+        cx = self.wndw_w // 2
+        cy = self.wndw_h // 2
+        overlay = self.game.Surface((self.wndw_w, self.wndw_h))
+        overlay.set_alpha(150)
+        overlay.fill((0, 0, 0))
+        self.screen.blit(overlay, (0, 0))
+        self.draw_centered('* PAUSED *', cy - 20, 72)
+        self.draw_centered('Press P to resume   ESC: quit to menu', cy + 60, 28)
+        # keep player name visible under overlay for context
+        _ = cx
+
     def game_over_screen(self):
         self.screen.fill((0, 0, 0))
 
+    # --- Phase 1 SFX: distinct event -> file mapping, each on its own
+    # channel so catches/combos/rotten never cut each other off. Reuses
+    # only the bundled static/audio/*.mp3. Everything guarded so a
+    # headless/dummy mixer can never break gameplay.
+    SFX_FILES = {
+        'eat': 'static/audio/cat_eat.mp3',  # normal catch
+        'golden': 'static/audio/cat_eat.mp3',  # golden catch, own channel
+        'rotten': 'static/audio/cat_go.mp3',  # rotten eat
+        'combo': 'static/audio/cat_running.mp3',  # combo-up fanfare
+        'gameover': 'static/audio/cat_go.mp3',  # game over, own channel
+    }
+
+    def _init_sfx(self):
+        try:
+            try:
+                if not pygame.mixer.get_init():
+                    pygame.mixer.init()
+            except pygame.error as e:
+                print(f'[warn] mixer init failed (no audio device?): {e}')
+                return
+            for i, (name, path) in enumerate(self.SFX_FILES.items()):
+                try:
+                    snd = pygame.mixer.Sound(path)
+                    if name == 'golden':
+                        snd.set_volume(1.0)  # golden sits above the mix
+                    self._sfx[name] = snd
+                    try:
+                        self._sfx_channels[name] = pygame.mixer.Channel(i)
+                    except pygame.error:
+                        pass  # channels unavailable — fall back to Sound.play
+                except pygame.error as e:
+                    print(f'[warn] cannot load {path}: {e}')
+        except Exception as e:  # noqa: BLE001 — audio must never break the game
+            print(f'[warn] sfx disabled: {e}')
+
+    def _play_sfx(self, name):
+        """Play one SFX on its dedicated channel; no-op if unavailable."""
+        try:
+            snd = self._sfx.get(name)
+            if snd is None:
+                return
+            ch = self._sfx_channels.get(name)
+            if ch is not None:
+                ch.play(snd)
+            else:
+                snd.play()
+        except pygame.error:
+            pass
+
     def _play_sound(self, path):
+        # Legacy music-channel playback, kept as a guarded fallback.
         try:
             self.game.mixer.music.load(path)
             self.game.mixer.music.play(0)
@@ -185,26 +284,56 @@ class PetunaGame:
             print(f'[warn] cannot play {path}: {e}')
 
     def eatSound(self):
-        self._play_sound('static/audio/cat_eat.mp3')
+        self._play_sfx('eat')
+
+    def goldenSound(self):
+        # Distinct path from normal catch (own channel + full volume).
+        # True resampling/pitch-up would need a new asset — out of scope —
+        # so golden gets its own channel, max volume, and the gold flash.
+        self._play_sfx('golden')
+
+    def comboSound(self):
+        self._play_sfx('combo')
 
     def badSound(self):
-        self._play_sound('static/audio/cat_go.mp3')
+        self._play_sfx('rotten')
 
     def goSound(self):
-        self._play_sound('static/audio/cat_go.mp3')
+        self._play_sfx('gameover')
+
+    # --- Phase 1 combo: consecutive good catches build x2/x3/x4 ---
+    COMBO_CAP = 4
+    BURST_COLORS = {
+        'good': (255, 220, 130),
+        'golden': (255, 215, 0),
+        'bad': (120, 200, 120),
+        'powerup': (255, 200, 60),
+    }
+
+    def combo_mult(self):
+        """Score multiplier from the current combo (x1/x2/x3/x4, capped)."""
+        return max(1, min(self.combo, self.COMBO_CAP))
+
+    def reset_combo(self):
+        self.combo = 0
 
     def reset_game(self):
         self.timer = float(self.init_timer)
+        self.paused = False
         self.player.reset()
         self.score_value = 0
         self.fall_speed = self.base_fall_speed
         self.game_over_reason = ''
+        self.combo = 0
+        self.bursts = []
+        self.juice = JuiceState()
         self.cat.pos_x = self.wndw_w // 2
         self.cat.pos_y = self.wndw_h - 130
         self.magnet_timer = 0.0
         self.shield_timer = 0.0
         self.slowmo_timer = 0.0
         self.frenzy_timer = 0.0
+        self.cat.lean = 0.0
         while len(self.treats) > START_TREAT_COUNT:
             self.treats.pop()
         while len(self.treats) < START_TREAT_COUNT:
@@ -426,23 +555,57 @@ class PetunaGame:
             self.clock.tick(60)
 
     def handle_eat(self, treat=None):
-        """Score (or lose a life for) the treat touching the cat."""
+        """Score (or lose a life for) the treat touching the cat.
+
+        Phase 1 juice (combo / bursts / shake / flash) combined with
+        Phase 2 depth (power-ups, shield absorb, frenzy doubling).
+        ``treat`` defaults to the backwards-compat alias ``self.treat``
+        (``self.treats[0]``); pass an explicit treat for multi-treat eats.
+        """
         if treat is None:
             treat = self.treat
+        cx, cy = treat.pos_x, treat.pos_y
         treat.touched = True
+        frenzy = self.score_multiplier()
         if treat.kind == 'powerup':
             self.eatSound()
             self.activate_powerup(treat.power)
-            self.player.add_points(1 * self.score_multiplier())
+            self.combo += 1  # power-up keeps the streak alive
+            if self.combo_mult() >= 2:
+                self.comboSound()  # combo-up fanfare on top of the catch
+            self.player.add_points(1 * self.combo_mult() * frenzy)
+            self.bursts.append(
+                ParticleBurst(cx, cy, self.BURST_COLORS['powerup'])
+            )
         elif treat.kind == 'bad':
             if self.shield_active:
                 self.eatSound()  # shield absorbs the rotten treat
+                self.bursts.append(
+                    ParticleBurst(cx, cy, self.BURST_COLORS['bad'], count=6)
+                )
             else:
                 self.badSound()
                 self.player.lose_life()
+                self.reset_combo()  # rotten resets the combo
+                self.juice.shake(dur=0.35, mag=14)  # rotten: shake ...
+                self.juice.flash((255, 40, 40), dur=0.25)  # ... + red flash
+                self.bursts.append(
+                    ParticleBurst(cx, cy, self.BURST_COLORS['bad'], count=10)
+                )
         else:
-            self.eatSound()
-            self.player.add_points(treat.points * self.score_multiplier())
+            self.combo += 1  # consecutive good catch builds the combo
+            mult = self.combo_mult() * frenzy
+            if treat.kind == 'golden':
+                self.goldenSound()  # distinct path from normal catch
+                self.juice.flash((255, 215, 0), dur=0.3)  # golden flash
+            else:
+                self.eatSound()
+            if self.combo_mult() >= 2:
+                self.comboSound()  # combo-up fanfare on top of the catch
+            self.player.add_points(treat.points * mult)
+            self.bursts.append(
+                ParticleBurst(cx, cy, self.BURST_COLORS[treat.kind])
+            )
             # treats fall faster as you score — gentle difficulty ramp
             self.fall_speed = min(self.fall_speed + 0.15, 12)
             for t in self.treats:
@@ -468,58 +631,104 @@ class PetunaGame:
                 others=self.treats[:i], min_dist=MIN_SPAWN_DISTANCE
             )
             t.vy = self.fall_speed
+        self.paused = False
 
         while self.game_running and self.app_running:
-
-            tmr = self.run_timmer()
-            self.tick_power_timers()
-            self.game.display.update()
-            self.screen.fill((52, 106, 107))
-            self.screen.blit(self.cat.catimg, self.cat.catrect)
-            for t in self.treats:
-                self.screen.blit(t.treatimg, t.treatrect)
-            self.drawing()
-
-            self.draw_right(f'Time: {int(self.timer)}', self.wndw_w - 20, 50, 30)
-
-            for t in list(self.treats):
-                # Magnet: good treats drift toward the cat.
-                if self.magnet_active and t.kind in ('good', 'golden'):
-                    if t.pos_x < self.cat.pos_x:
-                        t.pos_x = min(t.pos_x + MAGNET_PULL, self.cat.pos_x)
-                    elif t.pos_x > self.cat.pos_x:
-                        t.pos_x = max(t.pos_x - MAGNET_PULL, self.cat.pos_x)
-                missed = t.update(speed_scale=self.speed_scale())
-                if missed:
-                    self.handle_near_miss(t)
-                t.spawn()
-            self.cat.spawn()
+            # Delta time in 60-FPS frames: dt=1.0 at 60 FPS, 2.0 at 30 FPS.
+            ms = self.clock.tick(60)
+            dt = ms / 16.6667 if ms > 0 else 1.0
+            dt = min(dt, 3.0)  # clamp tab-out spikes
 
             for event in self.game.event.get():
                 if event.type == pygame.QUIT:
                     self.game_running = False
                     self.app_running = False
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_p:
+                        self.toggle_pause()
+                    elif event.key == pygame.K_m:
+                        self.toggle_mute()
+                    elif event.key == pygame.K_ESCAPE:
+                        if self.paused:
+                            self.paused = False
+                        self.game_running = False
+
+            if self.paused:
+                self.draw_pause_overlay()
+                self.game.display.update()
+                continue
+
+            tmr = self.run_timmer(dt)
+            self.tick_power_timers(dt / 60.0)  # power timers run in seconds
+            now_s = self.game.time.get_ticks() / 1000.0
+            self.game.display.update()
+            self.screen.fill((52, 106, 107))
+            ox, oy = self.juice.offset()  # rotten-eat screen shake
+            self.screen.blit(
+                self.cat.catimg, self.cat.catrect.move(ox, oy)
+            )
+            for t in self.treats:
+                self.screen.blit(t.treatimg, t.treatrect.move(ox, oy))
+            for burst in self.bursts:
+                burst.draw(self.screen)
+            self.juice.draw_flash(self.screen)
+            self.drawing()
+
+            self.draw_right(f'Time: {int(self.timer)}', self.wndw_w - 20, 50, 30)
+            self.draw_centered('P: pause   M: mute', 40, 22)
+
+            for t in list(self.treats):
+                # Magnet: good treats drift toward the cat (dt-scaled).
+                if self.magnet_active and t.kind in ('good', 'golden'):
+                    if t.pos_x < self.cat.pos_x:
+                        t.pos_x = min(t.pos_x + MAGNET_PULL * dt,
+                                      self.cat.pos_x)
+                    elif t.pos_x > self.cat.pos_x:
+                        t.pos_x = max(t.pos_x - MAGNET_PULL * dt,
+                                      self.cat.pos_x)
+                # treats drop from the sky (dt-scaled, slowmo halves falls)
+                missed = t.update(dt, speed_scale=self.speed_scale())
+                if missed:
+                    self.handle_near_miss(t)
+                    if t.missed_kind in ('good', 'golden'):
+                        self.reset_combo()  # missed good resets the combo
+                    t.missed_kind = None  # rotten missed: no penalty
+                t.pulse(now_s)  # squash & stretch while falling
+                t.spawn()
+            self.juice.update(dt)
+            for burst in self.bursts:
+                burst.update(dt)
+            self.bursts = [b for b in self.bursts if not b.dead]
+            self.cat.spawn()
 
             key_pressed = self.game.key.get_pressed()
 
             if key_pressed[pygame.K_ESCAPE]:
                 self.game_running = False
 
+            moving = 0
+            if key_pressed[pygame.K_LEFT]:
+                moving = -1
+            elif key_pressed[pygame.K_RIGHT]:
+                moving = 1
+            self.cat.animate(now_s, moving)  # wag + lean (squash & stretch)
+
+            step = self.velocity * dt
             if key_pressed[pygame.K_UP]:
                 if self.cat.pos_y - self.cat.catbox_offset > self.velocity:
-                    self.cat.pos_y -= self.velocity
+                    self.cat.pos_y -= step
 
             if key_pressed[pygame.K_DOWN]:
                 if self.cat.pos_y < (self.wndw_h - self.cat.cat_H - self.velocity):
-                    self.cat.pos_y += self.velocity
+                    self.cat.pos_y += step
 
             if key_pressed[pygame.K_LEFT]:
                 if self.cat.pos_x - self.cat.catbox_offset > self.velocity:
-                    self.cat.pos_x -= self.velocity
+                    self.cat.pos_x -= step
 
             if key_pressed[pygame.K_RIGHT]:
                 if self.cat.pos_x < (self.wndw_w - self.cat.cat_H - self.velocity):
-                    self.cat.pos_x += self.velocity
+                    self.cat.pos_x += step
 
             for t in list(self.treats):
                 if self.cat.catrect.colliderect(t.treatrect):
@@ -535,4 +744,3 @@ class PetunaGame:
                 return
 
             self.game.display.update()
-            self.clock.tick(60)
