@@ -1,2 +1,4 @@
 /venv/
 .gitignore
+# Phase 4: local player settings (volume/window/difficulty/skin)
+settings.json

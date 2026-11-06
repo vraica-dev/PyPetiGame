@@ -5,6 +5,21 @@ import pygame
 
 from objects.cursor_obj import CursorObj
 from objects.juice_obj import JuiceState, ParticleBurst
+from objects.meta import (
+    RESOLUTIONS,
+    STAT_KEYS,
+    bump_stat,
+    difficulty_preset,
+    ensure_stats_table,
+    get_stats,
+    is_new_best,
+    load_settings,
+    save_settings,
+    set_stat_max,
+    skin_by_id,
+    unlocked_skins,
+    volume_to_mixer,
+)
 from objects.petun_obj import PetunaObj
 from objects.player_obj import PlayerObj
 from objects.treats_obj import MIN_SPAWN_DISTANCE, TreatObj
@@ -92,19 +107,32 @@ class PetunaGame:
         self.game = pygame
         self.game_running = False
         self.app_running = True
+        # Phase 4 meta: persisted settings (volume / window size /
+        # difficulty / skin). Defaults keep the classic 1080p loop.
+        self.settings = load_settings(BASE_DIR)
+        res = RESOLUTIONS.get(
+            self.settings.get('resolution', '1080p'), (1920, 1080)
+        )
+        self.wndw_w, self.wndw_h = res
         self.paused = False
         self.muted = False
-        self.wndw_w = 1920
-        self.wndw_h = 1080
 
         self.db_path = os.path.join(BASE_DIR, 'scoreboard_db', 'scores_db')
         self.db_conn = self.init_db()
+        ensure_stats_table(self.db_conn)
+
+        # Combo + celebration state (classic loop has no combo system;
+        # Phase 4 tracks consecutive good eats for the stats screen).
+        self.combo = 0
+        self.is_new_best = False
+        self.current_skin = skin_by_id(self.settings.get('skin', 'classic'))
 
         self.game.init()
         try:
             self.game.mixer.init()
         except pygame.error as e:
             print(f'[warn] mixer init failed (no audio device?): {e}')
+        self.apply_volume()
         self.game.display.set_caption('Petunia Game')
 
         self.clock = self.game.time.Clock()
@@ -147,16 +175,61 @@ class PetunaGame:
         self._fonts = {}
         self.base_fall_speed = 5
         self.fall_speed = self.base_fall_speed
+        self.apply_difficulty()
         self.score_value = 0
         self.game_over_reason = ''
 
         # --- Phase 1 juice (feel only) ---
-        self.combo = 0  # consecutive good catches; miss/rotten resets
         self.bursts = []  # active ParticleBurst list
         self.juice = JuiceState()  # shake + flash timers
         self._sfx = {}  # name -> pygame.mixer.Sound, guarded
         self._sfx_channels = {}  # name -> dedicated mixer Channel
         self._init_sfx()
+
+    def apply_difficulty(self):
+        """Apply the difficulty preset to lives + fall speed.
+
+        Lives are stored on the game (``start_lives``) and pushed onto
+        the player, so ``PlayerObj.reset()`` stays at the classic 9
+        while runs start at the preset value."""
+        preset = difficulty_preset(self.settings.get('difficulty', 'Normal'))
+        self.base_fall_speed = float(preset['fall_speed'])
+        self.fall_speed = self.base_fall_speed
+        self.start_lives = int(preset['lives'])
+        if hasattr(self, 'player'):
+            self.player.lives = self.start_lives
+
+    def difficulty_speed_bonus(self):
+        """Fall-speed offset vs Normal, added on top of each wave base.
+
+        Easy slows every wave by 1.0, Hard speeds them by 2.0."""
+        preset = difficulty_preset(self.settings.get('difficulty', 'Normal'))
+        return float(preset['fall_speed']) - float(WAVES[0]['base_speed'])
+
+    def difficulty_treat_bonus(self):
+        """Concurrent-treat offset: Easy -1, Normal 0, Hard +1."""
+        return {'Easy': -1, 'Normal': 0, 'Hard': 1}.get(
+            self.settings.get('difficulty', 'Normal'), 0
+        )
+
+    def apply_volume(self):
+        try:
+            if getattr(self, 'muted', False):
+                self.game.mixer.music.set_volume(0.0)
+            else:
+                self.game.mixer.music.set_volume(
+                    volume_to_mixer(self.settings.get('volume', 7))
+                )
+        except pygame.error:
+            pass
+
+    def apply_resolution(self):
+        res = RESOLUTIONS.get(
+            self.settings.get('resolution', '1080p'), (1920, 1080)
+        )
+        self.wndw_w, self.wndw_h = res
+        self.screen = self.game.display.set_mode([self.wndw_w, self.wndw_h])
+        self.treat.set_bounds(self.wndw_w, self.wndw_h)
 
     def init_db(self):
         conn = sqlite3.connect(self.db_path)
@@ -303,7 +376,10 @@ class PetunaGame:
 
     def apply_wave(self, index):
         wave = self.effective_wave(index)
-        self.fall_speed = min(wave['base_speed'], 12)
+        # Difficulty shifts every wave's base speed (Easy -1, Hard +2).
+        self.fall_speed = min(
+            wave['base_speed'] + self.difficulty_speed_bonus(), 12
+        )
         # Wave mix + speed apply to ALL concurrent treats.
         for t in self.treats:
             t.pool = wave['skins']
@@ -316,13 +392,18 @@ class PetunaGame:
         if new_index != self.wave_index:
             self.wave_index = new_index
             self.apply_wave(new_index)
-            # Wave-clear bonus: +1 life refill, capped at MAX_LIVES.
-            self.player.gain_life(1, cap=MAX_LIVES)
+            # Wave-clear bonus: +1 life refill, capped so Easy's extra
+            # lives are never cut back down to the classic 9.
+            self.player.gain_life(
+                1, cap=max(MAX_LIVES, self.start_lives)
+            )
             return True
         return False
 
     def draw_game_over(self):
         self.draw_centered('* GAME OVER *', 350, 72)
+        if self.is_new_best:
+            self.draw_centered('*** NEW BEST! ***', 300, 48)
         self.draw_centered(self.game_over_reason, 430, 32)
         self.draw_centered(f'Final Score: {self.player.points}', 540, 40)
         self.draw_centered(f'Player:  {self.player.player_name}', 620, 40)
@@ -379,7 +460,12 @@ class PetunaGame:
         """Flip mute; silences music mixer, HUD shows MUTED indicator."""
         self.muted = not self.muted
         try:
-            self.game.mixer.music.set_volume(0.0 if self.muted else 1.0)
+            if self.muted:
+                self.game.mixer.music.set_volume(0.0)
+            else:
+                self.game.mixer.music.set_volume(
+                    volume_to_mixer(self.settings.get('volume', 7))
+                )
         except pygame.error as e:
             print(f'[warn] mute toggle failed: {e}')
         return self.muted
@@ -494,10 +580,17 @@ class PetunaGame:
         if mode in MODES:
             self.mode = mode
         self.timer = float(self.init_timer)
+        self.apply_difficulty()
         self.paused = False
         self.player.reset()
+        self.player.lives = self.start_lives
+        self.combo = 0
+        self.is_new_best = False
         self.score_value = 0
-        self.base_fall_speed = float(WAVES[0]['base_speed'])
+        # Wave-0 base shifted by difficulty (Easy 4.0 / Normal 5.0 /
+        # Hard 7.0); later waves re-apply via apply_wave().
+        self.base_fall_speed = float(WAVES[0]['base_speed']) + \
+            self.difficulty_speed_bonus()
         self.fall_speed = self.base_fall_speed
         self.game_over_reason = ''
         self.wave_index = 0
@@ -524,17 +617,20 @@ class PetunaGame:
             t.set_bounds(self.wndw_w, self.wndw_h)
             t.pool = WAVES[0]['skins']
             t.vy = self.fall_speed
-            t.vy = self.fall_speed
 
     # -- Phase 2: depth ---------------------------------------------
 
     def desired_treat_count(self):
-        """Concurrent treats scale 3-5 with score (THE intensity fix)."""
+        """Concurrent treats scale 3-5 with score (THE intensity fix).
+
+        Difficulty shifts the band: Easy runs one fewer treat, Hard one
+        more, clamped to at least 1."""
         count = START_TREAT_COUNT
         for step in TREAT_COUNT_STEPS:
             if self.player.points >= step:
                 count += 1
-        return min(count, MAX_TREAT_COUNT)
+        count += self.difficulty_treat_bonus()
+        return max(1, min(count, MAX_TREAT_COUNT + 1))
 
     def ensure_treats(self):
         """Grow the treat list toward the desired count (never shrinks)."""
@@ -604,6 +700,14 @@ class PetunaGame:
     def end_game(self, reason):
         self.game_running = False
         self.game_over_reason = reason
+        # Celebration flag must be computed BEFORE the scoreboard update.
+        self.is_new_best = is_new_best(
+            self.db_conn, self.player.player_name, self.player.points
+        )
+        try:
+            set_stat_max(self.db_conn, 'best_combo', self.combo)
+        except Exception:
+            pass
         self.write_scoreboard(self.player.player_name, self.player.points)
         self.is_new_best = self.record_result(
             self.player.player_name,
@@ -685,20 +789,29 @@ class PetunaGame:
         :return: na
         """
         cx = self.wndw_w // 2
-        rows = [430, 510, 590, 670]
+        rows = [380, 450, 520, 590, 660, 730, 800]
+        items = [
+            'START GAME',
+            f'MODE: {self.mode.upper()}',
+            'PLAYER NAME',
+            'SCOREBOARD',
+            'STATS',
+            'SKINS',
+            'SETTINGS',
+        ]
         sel = 0
         fs = True
         while fs and self.app_running:
             self.screen.fill((60, 60, 60))
 
-            items = [
-                'START GAME',
-                f'MODE: {self.mode.upper()}',
-                'PLAYER NAME',
-                'SCOREBOARD',
-            ]
+            items[1] = f'MODE: {self.mode.upper()}'
             self.draw_centered('* Welcome To Petunia Game *', 180, 64)
-            self.draw_centered('Catch treats, dodge the rotten ones!  9 lives.', 250, 28)
+            dif = self.settings.get('difficulty', 'Normal')
+            lives = difficulty_preset(dif)['lives']
+            self.draw_centered(
+                f'Catch treats, dodge the rotten ones!  {lives} lives ({dif}).',
+                250, 28,
+            )
             for i, item in enumerate(items):
                 self.draw_info(f'  {item} ', cx - 160, rows[i], 34)
             self.menu_cursor.pos_x = cx - 230
@@ -729,9 +842,197 @@ class PetunaGame:
                             self.change_player_name()
                         elif sel == 3:
                             self.show_scoreboard()
+                        elif sel == 4:
+                            self.show_stats()
+                        elif sel == 5:
+                            self.show_skins()
+                        elif sel == 6:
+                            self.show_settings()
 
             self.game.display.update()
             self.clock.tick(60)
+
+    def show_stats(self):
+        """Lifetime stats screen (new ``stats`` DB table)."""
+        showing = True
+        while showing and self.app_running:
+            self.screen.fill((70, 90, 140))
+            cx = self.wndw_w // 2
+            self.draw_info(' *** STATS *** ', cx - 150, 200, 40)
+            try:
+                stats = get_stats(self.db_conn)
+            except Exception:
+                stats = dict.fromkeys(STAT_KEYS, 0)
+            lines = [
+                f"Treats caught (all time): {stats['lifetime_treats']}",
+                f"Rotten treats dodged:     {stats['rottens_dodged']}",
+                f"Best combo:               {stats['best_combo']}",
+            ]
+            y = 320
+            for line in lines:
+                self.draw_info(line, cx - 330, y, 30)
+                y += 60
+            self.draw_centered('ESC: back', 640, 26)
+            for event in self.game.event.get():
+                if event.type == pygame.QUIT:
+                    showing = False
+                    self.app_running = False
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        showing = False
+            self.game.display.update()
+            self.clock.tick(60)
+
+    def show_skins(self):
+        """Unlockable cat skins, milestones at 50/150 lifetime treats."""
+        showing = True
+        sel_idx = 0
+        while showing and self.app_running:
+            self.screen.fill((90, 60, 110))
+            cx = self.wndw_w // 2
+            self.draw_info(' *** CAT SKINS *** ', cx - 180, 160, 40)
+            try:
+                lifetime = get_stats(self.db_conn)['lifetime_treats']
+            except Exception:
+                lifetime = 0
+            unlocked = {s['id'] for s in unlocked_skins(lifetime)}
+            self.draw_info(
+                f'Lifetime treats: {lifetime}', cx - 180, 230, 28
+            )
+            y = 300
+            from objects.meta import CAT_SKINS
+            for i, skin in enumerate(CAT_SKINS):
+                mark = '>>' if i == sel_idx else '  '
+                if skin['id'] in unlocked:
+                    cur = '  [current]' if skin['id'] == self.current_skin['id'] else ''
+                    label = f"{mark} {skin['name']}{cur}"
+                else:
+                    label = f"{mark} ??? (unlock at {skin['treats']} treats)"
+                self.draw_info(label, cx - 330, y, 30)
+                y += 55
+            self.draw_centered('UP/DOWN: browse  ENTER: wear  ESC: back', 700, 26)
+            for event in self.game.event.get():
+                if event.type == pygame.QUIT:
+                    showing = False
+                    self.app_running = False
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        showing = False
+                    elif event.key == pygame.K_DOWN:
+                        sel_idx = (sel_idx + 1) % len(CAT_SKINS)
+                    elif event.key == pygame.K_UP:
+                        sel_idx = (sel_idx - 1) % len(CAT_SKINS)
+                    elif event.key == pygame.K_RETURN:
+                        pick = CAT_SKINS[sel_idx]
+                        if pick['id'] in unlocked:
+                            self.current_skin = pick
+                            self.settings['skin'] = pick['id']
+                            save_settings(BASE_DIR, self.settings)
+            self.game.display.update()
+            self.clock.tick(60)
+
+    def show_settings(self):
+        """Settings screen: volume 0-10, window size, difficulty."""
+        showing = True
+        rows = ['volume', 'resolution', 'difficulty']
+        sel = 0
+        while showing and self.app_running:
+            self.screen.fill((40, 80, 80))
+            cx = self.wndw_w // 2
+            self.draw_info(' *** SETTINGS *** ', cx - 170, 160, 40)
+            vol = self.settings.get('volume', 7)
+            res = self.settings.get('resolution', '1080p')
+            dif = self.settings.get('difficulty', 'Normal')
+            w, h = RESOLUTIONS.get(res, (1920, 1080))
+            values = [f'Volume: {vol}/10', f'Window: {w}x{h}', f'Difficulty: {dif}']
+            y = 300
+            for i, val in enumerate(values):
+                mark = '>>' if i == sel else '  '
+                self.draw_info(f'{mark} {val}', cx - 260, y, 32)
+                y += 60
+            self.draw_centered('UP/DOWN: pick  LEFT/RIGHT: change  ESC: back', 640, 26)
+            for event in self.game.event.get():
+                if event.type == pygame.QUIT:
+                    showing = False
+                    self.app_running = False
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        showing = False
+                    elif event.key == pygame.K_DOWN:
+                        sel = (sel + 1) % len(rows)
+                    elif event.key == pygame.K_UP:
+                        sel = (sel - 1) % len(rows)
+                    elif rows[sel] == 'volume':
+                        if event.key == pygame.K_LEFT:
+                            self.settings['volume'] = max(0, vol - 1)
+                            self.apply_volume()
+                        elif event.key == pygame.K_RIGHT:
+                            self.settings['volume'] = min(10, vol + 1)
+                            self.apply_volume()
+                    elif rows[sel] == 'resolution':
+                        if event.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                            self.settings['resolution'] = (
+                                '720p' if res == '1080p' else '1080p'
+                            )
+                            self.apply_resolution()
+                    elif rows[sel] == 'difficulty':
+                        if event.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                            from objects.meta import DIFFICULTIES
+                            idx = DIFFICULTIES.index(dif) \
+                                if dif in DIFFICULTIES else 1
+                            step = 1 if event.key == pygame.K_RIGHT else -1
+                            self.settings['difficulty'] = DIFFICULTIES[
+                                (idx + step) % len(DIFFICULTIES)
+                            ]
+                            self.apply_difficulty()
+            save_settings(BASE_DIR, self.settings)
+            self.game.display.update()
+            self.clock.tick(60)
+
+    def pause_menu(self):
+        """Pause overlay: resume / settings / quit to menu.
+
+        Returns 'resume' or 'quit'. Settings opens the settings screen
+        and drops back into the pause menu."""
+        items = ['RESUME', 'SETTINGS', 'QUIT TO MENU']
+        sel = 0
+        cx = self.wndw_w // 2
+        paused = True
+        choice = 'resume'
+        while paused and self.app_running:
+            self.screen.fill((30, 30, 40))
+            self.draw_centered('* PAUSED *', 300, 64)
+            y = 450
+            for i, item in enumerate(items):
+                mark = '>>' if i == sel else '  '
+                self.draw_info(f'{mark} {item}', cx - 200, y, 34)
+                y += 70
+            self.draw_centered('UP/DOWN + ENTER   (P: resume)', 700, 26)
+            for event in self.game.event.get():
+                if event.type == pygame.QUIT:
+                    paused = False
+                    choice = 'quit'
+                    self.app_running = False
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_DOWN:
+                        sel = (sel + 1) % len(items)
+                    elif event.key == pygame.K_UP:
+                        sel = (sel - 1) % len(items)
+                    elif event.key in (pygame.K_p, pygame.K_ESCAPE):
+                        paused = False
+                        choice = 'resume'
+                    elif event.key == pygame.K_RETURN:
+                        if sel == 0:
+                            paused = False
+                            choice = 'resume'
+                        elif sel == 1:
+                            self.show_settings()
+                        elif sel == 2:
+                            paused = False
+                            choice = 'quit'
+            self.game.display.update()
+            self.clock.tick(60)
+        return choice
 
     def game_over(self):
         """
@@ -740,6 +1041,9 @@ class PetunaGame:
         """
 
         self.goSound()
+        if self.is_new_best:
+            # 'New best!' fanfare: celebratory eat jingle over game-over.
+            self.eatSound()
         go = True
         while go and self.app_running:
             self.game.display.update()
@@ -762,13 +1066,22 @@ class PetunaGame:
 
             self.clock.tick(60)
 
+    def _bump_catch_stats(self):
+        """Phase 4 lifetime stats for a good/power-up catch."""
+        try:
+            bump_stat(self.db_conn, 'lifetime_treats', 1)
+            set_stat_max(self.db_conn, 'best_combo', self.combo)
+        except Exception:
+            pass
+
     def handle_eat(self, treat=None):
         """Score (or lose a life for) the treat touching the cat.
 
         Phase 1 juice (combo / bursts / shake / flash) combined with
-        Phase 2 depth (power-ups, shield absorb, frenzy doubling).
-        ``treat`` defaults to the backwards-compat alias ``self.treat``
-        (``self.treats[0]``); pass an explicit treat for multi-treat eats.
+        Phase 2 depth (power-ups, shield absorb, frenzy doubling) and
+        Phase 4 lifetime stats. ``treat`` defaults to the
+        backwards-compat alias ``self.treat`` (``self.treats[0]``); pass
+        an explicit treat for multi-treat eats.
         """
         if treat is None:
             treat = self.treat
@@ -781,6 +1094,7 @@ class PetunaGame:
             self.combo += 1  # power-up keeps the streak alive
             self.best_combo = max(self.best_combo, self.combo)
             self.treats_caught += 1
+            self._bump_catch_stats()
             if self.combo_mult() >= 2:
                 self.comboSound()  # combo-up fanfare on top of the catch
             self.player.add_points(1 * self.combo_mult() * frenzy)
@@ -806,6 +1120,7 @@ class PetunaGame:
             self.combo += 1  # consecutive good catch builds the combo
             self.best_combo = max(self.best_combo, self.combo)
             self.treats_caught += 1
+            self._bump_catch_stats()
             mult = self.combo_mult() * frenzy
             if treat.kind == 'golden':
                 self.goldenSound()  # distinct path from normal catch
@@ -827,6 +1142,16 @@ class PetunaGame:
         treat.vy = self.fall_speed
         self.ensure_treats()
 
+    def handle_miss(self, missed_kind):
+        """A treat fell off-screen untouched. Rottens dodged count up;
+        any miss breaks the combo streak."""
+        self.combo = 0
+        if missed_kind == 'bad':
+            try:
+                bump_stat(self.db_conn, 'rottens_dodged', 1)
+            except Exception:
+                pass
+
     def run_game(self):
         """
         main screen; game itself — treats drop from the sky;
@@ -834,7 +1159,7 @@ class PetunaGame:
         """
 
         self.reset_game()
-        self.cat.set_graph()
+        self.cat.set_graph(self.current_skin)
         for t in self.treats:
             t.set_treat_pic()
         # Fair opening spread: no overlapping spawns.
@@ -857,12 +1182,14 @@ class PetunaGame:
                     self.app_running = False
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_p:
-                        self.toggle_pause()
+                        # Phase 4 pause menu (resume / settings / quit)
+                        # works in both classic and endless/wave runs.
+                        if self.pause_menu() == 'quit':
+                            self.game_running = False
+                            return
                     elif event.key == pygame.K_m:
                         self.toggle_mute()
                     elif event.key == pygame.K_ESCAPE:
-                        if self.paused:
-                            self.paused = False
                         self.game_running = False
 
             if self.paused:

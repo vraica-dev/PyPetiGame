@@ -23,9 +23,20 @@ class PetunaObj:
 
         # self.set_graph()
 
-    def set_graph(self):
+    def set_graph(self, skin=None):
+        """Load the cat sprite, optionally tinted/scaled per skin dict."""
         peti_img = pygame.image.load('static/images/cat.png')
-        peti_img = pygame.transform.scale(peti_img, (self.cat_H, self.cat_W))
+        scale = 1.0
+        tint = None
+        if skin is not None:
+            scale = float(skin.get('scale', 1.0))
+            tint = skin.get('tint')
+        size = (int(self.cat_H * scale), int(self.cat_W * scale))
+        peti_img = pygame.transform.scale(peti_img, size)
+        if tint is not None:
+            glow = pygame.Surface(peti_img.get_size()).convert_alpha()
+            glow.fill((*tint, 0))
+            peti_img.blit(glow, (0, 0), special_flags=pygame.BLEND_RGB_MULT)
         peti_img.convert()
         self.base_img = peti_img
         self.catimg = peti_img
