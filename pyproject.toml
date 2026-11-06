@@ -1,7 +1,17 @@
 [project]
 name = "pypetigame"
 version = "1.0.0"
+description = "Catch-the-treats arcade game built with pygame"
 requires-python = ">=3.10"
+dependencies = [
+  "pygame-ce>=2.5",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "ruff>=0.9",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
