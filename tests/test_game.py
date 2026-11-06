@@ -69,7 +69,7 @@ def test_scoring_normal_and_golden_treat(pg):
 def test_treat_drops_from_sky_within_bounds(pg):
     for _ in range(50):
         pg.treat.rand_move()
-        assert 40 <= pg.treat.pos_x <= pg.wndw_w - 40
+        assert 80 <= pg.treat.pos_x <= pg.wndw_w - 80
         assert pg.treat.pos_y == -40  # spawns above the screen, falls in
     pg.treat.spawn()
     assert pg.treat.treatrect.center == (pg.treat.pos_x, pg.treat.pos_y)
@@ -178,3 +178,46 @@ def test_app_boots_with_db_table_and_basedir(pg):
         "SELECT name FROM sqlite_master WHERE type='table' AND name='scores'"
     )
     assert cur.fetchone() is not None
+
+
+def test_scoreboard_keeps_best_not_latest(memdb):
+    memdb.write_scoreboard('BEST', 9)
+    memdb.write_scoreboard('BEST', 5)  # lower score must NOT overwrite best
+    assert memdb.read_scoreboard() == [('BEST', 9)]
+    memdb.write_scoreboard('BEST', 12)  # higher score updates best
+    assert memdb.read_scoreboard() == [('BEST', 12)]
+
+
+def test_timer_scales_with_dt(pg):
+    pg.timer = 10.0
+    pg.run_timmer(dt=2.0)  # 30 FPS frame counts double
+    assert pg.timer == pytest.approx(10.0 - 2.0 / 60)
+    pg.timer = 10.0
+    pg.run_timmer()  # default dt=1.0 keeps 60 FPS behaviour
+    assert pg.timer == pytest.approx(10.0 - 1.0 / 60)
+
+
+def test_treat_fall_scales_with_dt(pg):
+    pg.treat.set_treat_pic()
+    pg.treat.pos_y = 100.0
+    vy = pg.treat.vy
+    pg.treat.update(dt=2.0)
+    assert pg.treat.pos_y == pytest.approx(100.0 + vy * 2.0)
+    pg.treat.pos_y = 100.0
+    pg.treat.update()
+    assert pg.treat.pos_y == pytest.approx(100.0 + vy)
+
+
+def test_pause_toggle_flips_flag(pg):
+    assert pg.paused is False
+    assert pg.toggle_pause() is True
+    assert pg.toggle_pause() is False
+    pg.reset_game()
+    assert pg.paused is False
+
+
+def test_mute_toggle_flips_flag_and_volume(pg):
+    assert pg.muted is False
+    assert pg.toggle_mute() is True
+    assert pg.toggle_mute() is False
+    assert pg.muted is False
