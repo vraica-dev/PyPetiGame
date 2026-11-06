@@ -1,3 +1,4 @@
+import math
 import random
 
 import pygame
@@ -33,6 +34,8 @@ class TreatObj:
 
         self.treatimg = None
         self.treatrect = None
+        self.base_img = None  # untransformed sprite; pulse scales from it
+        self.missed_kind = None  # kind of the treat that last fell off-screen
 
     def set_treat_pic(self):
         rndm_pic, kind, points = random.choice(SKINS)
@@ -40,6 +43,7 @@ class TreatObj:
         treats_img = pygame.transform.scale(treats_img, (TREAT_SIZE, TREAT_SIZE))
         treats_img.convert()
 
+        self.base_img = treats_img
         self.treatimg = treats_img
         self.selected_skin = rndm_pic.split('/')[-1]
         self.kind = kind
@@ -65,9 +69,27 @@ class TreatObj:
         """Fall one step. Returns True if it fell off-screen (missed)."""
         self.pos_y += self.vy
         if self.pos_y > self.h + 60:
+            self.missed_kind = self.kind  # game reads this to reset combo
             self.rand_move()
             return True
         return False
+
+    def pulse(self, time_s):
+        """Squash & stretch: gentle scale pulse while falling.
+
+        Headless-safe: pure transform.scale on an in-memory surface."""
+        if self.base_img is None or self.treatrect is None:
+            return
+        try:
+            s = 1.0 + 0.08 * math.sin(time_s * 6.0 + self.pos_x * 0.01)
+            w = max(1, int(TREAT_SIZE * s))
+            h = max(1, int(TREAT_SIZE * s))
+            center = self.treatrect.center
+            self.treatimg = pygame.transform.scale(self.base_img, (w, h))
+            self.treatrect = self.treatimg.get_rect()
+            self.treatrect.center = center
+        except pygame.error:
+            pass  # cosmetic only — never break the game
 
     def spawn(self):
         self.treatrect.center = self.pos_x, self.pos_y
