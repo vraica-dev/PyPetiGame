@@ -1,0 +1,11 @@
+[project]
+name = "pypetigame"
+version = "1.0.0"
+requires-python = ">=3.10"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
