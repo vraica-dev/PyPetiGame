@@ -20,6 +20,8 @@ class PetunaGame:
         self.game = pygame
         self.game_running = False
         self.app_running = True
+        self.paused = False
+        self.muted = False
         self.wndw_w = 1920
         self.wndw_h = 1080
 
@@ -81,7 +83,9 @@ class PetunaGame:
         result = c.fetchone()
 
         if result:
-            c.execute(update_str, (score_p, name_p))
+            # BEST per player: only overwrite when the new score beats the old.
+            if score_p > result[1]:
+                c.execute(update_str, (score_p, name_p))
         else:
             c.execute(sql_str, (name_p, score_p))
 
@@ -139,15 +143,44 @@ class PetunaGame:
         self.draw_right(
             f'Player: {self.player.player_name}', self.wndw_w - 20, 10, 30
         )
+        if self.muted:
+            self.draw_info('MUTED (M)', 10, 95, 30)
 
-    def run_timmer(self):
+    def run_timmer(self, dt=1.0):
+        """Count the timer down. dt is in 60-FPS frames (1.0 ~= 1/60s)."""
         if self.timer > 0:
-            self.timer -= 1 / 60
+            self.timer -= dt / 60
             if self.timer < 0:
                 self.timer = 0
             return self.timer
         else:
             return 0
+
+    def toggle_pause(self):
+        """Flip the pause flag; the run_game loop renders the overlay."""
+        self.paused = not self.paused
+        return self.paused
+
+    def toggle_mute(self):
+        """Flip mute; silences music mixer, HUD shows MUTED indicator."""
+        self.muted = not self.muted
+        try:
+            self.game.mixer.music.set_volume(0.0 if self.muted else 1.0)
+        except pygame.error as e:
+            print(f'[warn] mute toggle failed: {e}')
+        return self.muted
+
+    def draw_pause_overlay(self):
+        cx = self.wndw_w // 2
+        cy = self.wndw_h // 2
+        overlay = self.game.Surface((self.wndw_w, self.wndw_h))
+        overlay.set_alpha(150)
+        overlay.fill((0, 0, 0))
+        self.screen.blit(overlay, (0, 0))
+        self.draw_centered('* PAUSED *', cy - 20, 72)
+        self.draw_centered('Press P to resume   ESC: quit to menu', cy + 60, 28)
+        # keep player name visible under overlay for context
+        _ = cx
 
     def game_over_screen(self):
         self.screen.fill((0, 0, 0))
@@ -170,6 +203,7 @@ class PetunaGame:
 
     def reset_game(self):
         self.timer = float(self.init_timer)
+        self.paused = False
         self.player.reset()
         self.score_value = 0
         self.fall_speed = self.base_fall_speed
@@ -340,10 +374,34 @@ class PetunaGame:
         self.reset_game()
         self.cat.set_graph()
         self.treat.set_treat_pic()
+        self.paused = False
 
         while self.game_running and self.app_running:
+            # Delta time in 60-FPS frames: dt=1.0 at 60 FPS, 2.0 at 30 FPS.
+            ms = self.clock.tick(60)
+            dt = ms / 16.6667 if ms > 0 else 1.0
+            dt = min(dt, 3.0)  # clamp tab-out spikes
 
-            tmr = self.run_timmer()
+            for event in self.game.event.get():
+                if event.type == pygame.QUIT:
+                    self.game_running = False
+                    self.app_running = False
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_p:
+                        self.toggle_pause()
+                    elif event.key == pygame.K_m:
+                        self.toggle_mute()
+                    elif event.key == pygame.K_ESCAPE:
+                        if self.paused:
+                            self.paused = False
+                        self.game_running = False
+
+            if self.paused:
+                self.draw_pause_overlay()
+                self.game.display.update()
+                continue
+
+            tmr = self.run_timmer(dt)
             self.game.display.update()
             self.screen.fill((52, 106, 107))
             self.screen.blit(self.cat.catimg, self.cat.catrect)
@@ -351,36 +409,33 @@ class PetunaGame:
             self.drawing()
 
             self.draw_right(f'Time: {int(self.timer)}', self.wndw_w - 20, 50, 30)
+            self.draw_centered('P: pause   M: mute', 40, 22)
 
-            self.treat.update()  # treats drop from the sky
+            self.treat.update(dt)  # treats drop from the sky (dt-scaled)
             self.treat.spawn()
             self.cat.spawn()
-
-            for event in self.game.event.get():
-                if event.type == pygame.QUIT:
-                    self.game_running = False
-                    self.app_running = False
 
             key_pressed = self.game.key.get_pressed()
 
             if key_pressed[pygame.K_ESCAPE]:
                 self.game_running = False
 
+            step = self.velocity * dt
             if key_pressed[pygame.K_UP]:
                 if self.cat.pos_y - self.cat.catbox_offset > self.velocity:
-                    self.cat.pos_y -= self.velocity
+                    self.cat.pos_y -= step
 
             if key_pressed[pygame.K_DOWN]:
                 if self.cat.pos_y < (self.wndw_h - self.cat.cat_H - self.velocity):
-                    self.cat.pos_y += self.velocity
+                    self.cat.pos_y += step
 
             if key_pressed[pygame.K_LEFT]:
                 if self.cat.pos_x - self.cat.catbox_offset > self.velocity:
-                    self.cat.pos_x -= self.velocity
+                    self.cat.pos_x -= step
 
             if key_pressed[pygame.K_RIGHT]:
                 if self.cat.pos_x < (self.wndw_w - self.cat.cat_H - self.velocity):
-                    self.cat.pos_x += self.velocity
+                    self.cat.pos_x += step
 
             if self.cat.catrect.colliderect(self.treat.treatrect):
                 self.handle_eat()
@@ -394,4 +449,3 @@ class PetunaGame:
                 return
 
             self.game.display.update()
-            self.clock.tick(60)
