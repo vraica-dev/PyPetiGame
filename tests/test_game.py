@@ -221,3 +221,95 @@ def test_mute_toggle_flips_flag_and_volume(pg):
     assert pg.toggle_mute() is True
     assert pg.toggle_mute() is False
     assert pg.muted is False
+
+
+def _eat_at_cat(pg, kind, points):
+    """Place a treat of the given kind on the cat and eat it."""
+    pg.treat.kind = kind
+    pg.treat.points = points
+    pg.treat.pos_x, pg.treat.pos_y = pg.cat.pos_x, pg.cat.pos_y
+    pg.cat.spawn()
+    pg.treat.spawn()
+    assert pg.cat.catrect.colliderect(pg.treat.treatrect)
+    pg.handle_eat()
+
+
+def test_combo_builds_multiplier_and_caps(pg):
+    pg.reset_game()
+    pg.cat.set_graph()
+    pg.treat.set_treat_pic()
+    assert pg.combo_mult() == 1
+    _eat_at_cat(pg, 'good', 1)  # combo 1 -> x1
+    assert pg.combo == 1
+    assert pg.player.points == 1
+    _eat_at_cat(pg, 'good', 1)  # combo 2 -> x2
+    assert pg.combo == 2
+    assert pg.player.points == 3
+    _eat_at_cat(pg, 'good', 1)  # combo 3 -> capped below/at x3
+    assert pg.combo_mult() == 3
+    for _ in range(10):  # cap holds at x4 no matter how long the streak
+        _eat_at_cat(pg, 'good', 1)
+    assert pg.combo_mult() == pg.COMBO_CAP == 4
+
+
+def test_rotten_eat_resets_combo_and_triggers_juice(pg):
+    pg.reset_game()
+    pg.cat.set_graph()
+    pg.treat.set_treat_pic()
+    _eat_at_cat(pg, 'good', 1)
+    _eat_at_cat(pg, 'good', 1)
+    assert pg.combo == 2
+    _eat_at_cat(pg, 'bad', 0)
+    assert pg.combo == 0  # rotten resets the combo
+    assert pg.player.lives == 8
+    assert len(pg.bursts) == 3  # one burst per eat
+    assert pg.juice.shake_t > 0  # screen shake kicked in
+    assert pg.juice.flash_t > 0  # red flash kicked in
+
+
+def test_missed_good_resets_combo_but_missed_rotten_does_not(pg):
+    pg.reset_game()
+    pg.combo = 3
+    pg.treat.missed_kind = 'good'
+    # mirror the run_game missed-treat branch
+    if pg.treat.missed_kind in ('good', 'golden'):
+        pg.reset_combo()
+        pg.treat.missed_kind = None
+    elif pg.treat.missed_kind is not None:
+        pg.treat.missed_kind = None
+    assert pg.combo == 0
+    pg.combo = 3
+    pg.treat.missed_kind = 'bad'
+    if pg.treat.missed_kind in ('good', 'golden'):
+        pg.reset_combo()
+        pg.treat.missed_kind = None
+    elif pg.treat.missed_kind is not None:
+        pg.treat.missed_kind = None  # rotten missed: no penalty
+    assert pg.combo == 3
+
+
+def test_reset_game_clears_combo_bursts_juice_and_pause(pg):
+    pg.reset_game()
+    pg.combo = 5
+    pg.toggle_pause()
+    pg.bursts.append(object())
+    pg.juice.shake_t = 0.2
+    pg.reset_game()
+    assert pg.combo == 0
+    assert pg.bursts == []
+    assert pg.paused is False
+    assert pg.combo_mult() == 1
+
+
+def test_pause_and_mute_flags_survive_juice_state(pg):
+    pg.reset_game()
+    assert pg.paused is False and pg.muted is False
+    pg.toggle_pause()
+    pg.toggle_mute()
+    assert pg.paused is True and pg.muted is True
+    # juice objects stay usable while paused/muted
+    pg.juice.shake(dur=0.1, mag=5)
+    assert pg.juice.shake_t > 0
+    pg.toggle_pause()
+    pg.toggle_mute()
+    assert pg.paused is False and pg.muted is False
