@@ -48,11 +48,6 @@ No rule changes, all feel (the Vlambeer lesson):
 - [ ] Stats screen (lifetime treats, rottens dodged, best combo — new DB table)
 - [ ] Pause menu, "new best!" game-over celebration
 
-## Phase 5 — Distribution (1 PR, when the game deserves it)
-
-- [ ] PyInstaller one-file build via CI → GitHub Releases
-- [ ] itch.io page
-
 ## Explicitly out of scope
 
 - No multiplayer (doubles complexity, halves polish)

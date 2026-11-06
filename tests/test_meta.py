@@ -142,3 +142,77 @@ def test_end_game_flags_celebration_and_persists(monkeypatch, memdb):
     memdb.player.points = 2
     memdb.end_game("Time's up!")
     assert memdb.is_new_best is False
+
+
+# -- Phase 4 x waves/endless/multi-treat integration ---------------------
+
+def test_difficulty_shifts_wave_speeds(pg):
+    pg.settings['difficulty'] = 'Hard'
+    pg.reset_game()
+    assert pg.fall_speed == pytest.approx(7.0)
+    pg.elapsed = 20.0
+    pg._update_wave()  # Sugar Rush base 7.0 + Hard bonus 2.0
+    assert pg.wave_index == 1
+    assert pg.fall_speed == pytest.approx(9.0)
+    for t in pg.treats:
+        assert t.vy == pytest.approx(9.0)
+    pg.settings['difficulty'] = 'Easy'
+    pg.reset_game()
+    assert pg.fall_speed == pytest.approx(4.0)
+    pg.elapsed = 20.0
+    pg._update_wave()
+    assert pg.fall_speed == pytest.approx(6.0)  # 7.0 base - 1.0 bonus
+
+
+def test_difficulty_shifts_treat_counts(pg):
+    pg.settings['difficulty'] = 'Easy'
+    pg.reset_game()
+    assert pg.desired_treat_count() == 2
+    pg.settings['difficulty'] = 'Hard'
+    pg.reset_game()
+    assert pg.desired_treat_count() == 4
+    pg.player.points = 25  # past both TREAT_COUNT_STEPS
+    assert pg.desired_treat_count() == 6  # 5 + Hard bonus, clamped
+
+
+def test_multi_treat_combo_bumps_lifetime_stats(memdb):
+    memdb.reset_game()
+    memdb.cat.set_graph()
+    for t in memdb.treats:
+        t.set_treat_pic()
+        t.kind = 'good'
+        t.points = 1
+    memdb.handle_eat(memdb.treats[1])
+    memdb.handle_eat(memdb.treats[2])
+    assert memdb.combo == 2
+    assert memdb.best_combo == 2
+    assert memdb.treats_caught == 2
+    assert meta.get_stats(memdb.db_conn)['lifetime_treats'] == 2
+    assert meta.get_stats(memdb.db_conn)['best_combo'] == 2
+
+
+def test_wave_clear_keeps_easy_bonus_lives(pg):
+    pg.settings['difficulty'] = 'Easy'
+    pg.reset_game()
+    assert pg.player.lives == 12
+    pg.elapsed = 20.0
+    pg._update_wave()  # wave-clear refill must not cut Easy back to 9
+    assert pg.player.lives == 12
+
+
+def test_pause_menu_resume_path(pg, monkeypatch):
+    import pygame
+    events = [pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN)]
+    monkeypatch.setattr(pg.game.event, 'get', lambda: events)
+    assert pg.pause_menu() == 'resume'
+
+
+def test_pause_menu_quit_path(pg, monkeypatch):
+    import pygame
+    events = [
+        pygame.event.Event(pygame.KEYDOWN, key=pygame.K_DOWN),
+        pygame.event.Event(pygame.KEYDOWN, key=pygame.K_DOWN),
+        pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RETURN),
+    ]
+    monkeypatch.setattr(pg.game.event, 'get', lambda: events)
+    assert pg.pause_menu() == 'quit'
