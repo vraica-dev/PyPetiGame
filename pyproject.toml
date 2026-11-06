@@ -12,6 +12,11 @@ dev = [
   "pytest>=8",
   "ruff>=0.9",
 ]
+packaging = [
+  # Phase 5 distribution: PyInstaller one-file build (pypetigame.spec).
+  # Install with: uv sync --group packaging && uv run pyinstaller pypetigame.spec
+  "pyinstaller>=6",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]

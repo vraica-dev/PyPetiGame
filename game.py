@@ -1,5 +1,6 @@
 import os
 import sqlite3
+import sys
 
 import pygame
 
@@ -8,7 +9,38 @@ from objects.petun_obj import PetunaObj
 from objects.player_obj import PlayerObj
 from objects.treats_obj import TreatObj
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+def _base_dir():
+    # PyInstaller one-file extracts bundled data to sys._MEIPASS at runtime.
+    # Unfrozen: the directory containing this file (the game root).
+    bundled = getattr(sys, '_MEIPASS', None)
+    if bundled:
+        return bundled
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+BASE_DIR = _base_dir()
+
+
+def _user_data_dir():
+    # Writable per-user dir for the frozen build (the bundle dir may be
+    # read-only or ephemeral, so the SQLite scoreboard lives outside it).
+    home = os.path.expanduser('~')
+    if sys.platform == 'win32':
+        root = os.environ.get('APPDATA', home)
+        return os.path.join(root, 'PyPetiGame')
+    if sys.platform == 'darwin':
+        return os.path.join(home, 'Library', 'Application Support', 'PyPetiGame')
+    xdg = os.environ.get('XDG_DATA_HOME', os.path.join(home, '.local', 'share'))
+    return os.path.join(xdg, 'pypetigame')
+
+
+def _default_db_path():
+    if getattr(sys, 'frozen', False):
+        data_dir = _user_data_dir()
+        os.makedirs(data_dir, exist_ok=True)
+        return os.path.join(data_dir, 'scores_db')
+    return os.path.join(BASE_DIR, 'scoreboard_db', 'scores_db')
 
 
 class PetunaGame:
@@ -23,7 +55,7 @@ class PetunaGame:
         self.wndw_w = 1920
         self.wndw_h = 1080
 
-        self.db_path = os.path.join(BASE_DIR, 'scoreboard_db', 'scores_db')
+        self.db_path = _default_db_path()
         self.db_conn = self.init_db()
 
         self.game.init()

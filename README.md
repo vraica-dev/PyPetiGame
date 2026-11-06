@@ -62,4 +62,23 @@ uv run pytest -q      # tests (10 tests in tests/)
 Every push / PR to `master` runs the same two commands as CI
 (`.github/workflows/ci.yml`) on the local runner.
 
+## Distribution (local build only, no publishing)
+
+One-file Linux binary via PyInstaller — build locally only. Nothing is
+published: no GitHub Releases, no tags, no store uploads.
+See `.github/workflows/build.yml` (manual `workflow_dispatch` + PR checks
+that only upload a CI artifact for inspection).
+
+```bash
+uv sync --group packaging
+uv run pyinstaller pypetigame.spec  # -> dist/pypetigame
+```
+
+The frozen build bundles `static/` (images, audio, font) and stores the
+SQLite scoreboard per-user (`~/.local/share/pypetigame/` on Linux) since
+the bundle dir isn't a safe place for writable data.
+
+Release flow: none — local builds only, the game is not published
+and has never been published.
+
 Please consider this is not the final version. Multiple finetunnings are still necessary.

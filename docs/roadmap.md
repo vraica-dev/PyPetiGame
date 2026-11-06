@@ -22,7 +22,7 @@ No rule changes, all feel (the Vlambeer lesson):
 - [ ] Catch particles (crumb bursts, 0.4s life)
 - [ ] Squash & stretch (cat leans/squashes on move, treats pulse while falling)
 - [ ] Combo system (consecutive good catches build ×2/×3/×4; miss or rotten resets)
-- [ ] Screen shake + red flash on rotten eat; golden flash + pitch-up on golden
+- [ ] Screen shake + red flash on rotten eat; golden flash + higher tone on golden
 - [ ] Cat animation (tail wag / lean — kill the static-photo look)
 - [ ] Distinct SFX per event (normal/golden/rotten/combo-up/game-over)
 
@@ -48,15 +48,15 @@ No rule changes, all feel (the Vlambeer lesson):
 - [ ] Stats screen (lifetime treats, rottens dodged, best combo — new DB table)
 - [ ] Pause menu, "new best!" game-over celebration
 
-## Phase 5 — Distribution (1 PR, when the game deserves it)
+## Phase 5 — Distribution (local build only, no publishing)
 
-- [ ] PyInstaller one-file build via CI → GitHub Releases
-- [ ] itch.io page
+- [ ] PyInstaller one-file build, run locally (`pyinstaller pypetigame.spec`)
+- [ ] CI build check only (artifact upload for inspection, no releases)
 
 ## Explicitly out of scope
 
 - No multiplayer (doubles complexity, halves polish)
-- No engine switch (pygame-ce is fine at this scope)
+- No engine change (pygame-ce is fine at this scope)
 - No dynamic resolution scaling before the fun is proven (tuned for 1080p)
 
 ## Suggested order
