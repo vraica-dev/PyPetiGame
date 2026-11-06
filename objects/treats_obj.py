@@ -25,7 +25,7 @@ class TreatObj:
         treats_img.convert()
 
         self.treatimg = treats_img
-        self.selected_skin = rndm_pic
+        self.selected_skin = rndm_pic.split('/')[-1]
         self.set_graph()
         self.spawn()
 

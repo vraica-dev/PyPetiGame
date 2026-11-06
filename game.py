@@ -1,3 +1,4 @@
+import os
 import pygame
 
 from objects.petun_obj import PetunaObj
@@ -6,16 +7,30 @@ from objects.player_obj import PlayerObj
 from objects.cursor_obj import CursorObj
 import sqlite3
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 
 class PetunaGame:
     def __init__(self):
+        # Run all relative asset paths from the game root no matter
+        # where the player launches the script from.
+        os.chdir(BASE_DIR)
+
         self.game = pygame
-        self.game_running = 1
+        self.game_running = False
+        self.app_running = True
         self.wndw_h = 500
         self.wndw_w = 500
 
-        self.db_path = 'scoreboard_db/scores_db'
+        self.db_path = os.path.join(BASE_DIR, 'scoreboard_db', 'scores_db')
         self.db_conn = self.init_db()
+
+        self.game.init()
+        try:
+            self.game.mixer.init()
+        except pygame.error as e:
+            print(f'[warn] mixer init failed (no audio device?): {e}')
+        self.game.display.set_caption('Petunia Game')
 
         self.clock = self.game.time.Clock()
         self.screen = self.game.display.set_mode([self.wndw_h, self.wndw_w])
@@ -25,19 +40,18 @@ class PetunaGame:
         self.player = PlayerObj()
         self.menu_cursor = CursorObj()
 
-        self.init_timer = 5
+        self.init_timer = 60
+        self.timer = float(self.init_timer)
 
         self.velocity = 10
         self.score_value = 0
 
-        self.game.init()
-        self.game.mixer.init()
-        self.game.display.set_caption('Petunia Game')
-
-        self.init_db()
-
     def init_db(self):
         conn = sqlite3.connect(self.db_path)
+        conn.execute(
+            'CREATE TABLE IF NOT EXISTS scores (name TEXT NOT NULL, score INTEGER)'
+        )
+        conn.commit()
         return conn
 
     def read_scoreboard(self):
@@ -79,7 +93,7 @@ class PetunaGame:
 
     def draw_game_over(self):
         font = self.game.font.SysFont('comicsans', 36, 1)
-        render_go = font.render(f'* G A M E O V E R *', True, (255, 255, 255))
+        render_go = font.render('* G A M E O V E R *', True, (255, 255, 255))
         render_player = font.render(f'Player:  {self.player.player_name}', True, (255, 255, 255))
         render_final_score = font.render(f'Final Score: {self.player.points}', True, (255, 255, 255))
 
@@ -89,43 +103,54 @@ class PetunaGame:
 
     def drawing(self):
         self.draw_info()
-        self.draw_info(f'Player: {self.player.player_name}', 370, 10)
+        self.draw_info(f'Player: {self.player.player_name}', 320, 10)
 
     def run_timmer(self):
         if self.timer > 0:
-            self.timer -= 0.01
+            self.timer -= 1 / 60
+            if self.timer < 0:
+                self.timer = 0
+            return self.timer
         else:
             return 0
 
     def game_over_screen(self):
         self.screen.fill((0, 0, 0))
 
+    def _play_sound(self, path):
+        try:
+            self.game.mixer.music.load(path)
+            self.game.mixer.music.play(0)
+        except pygame.error as e:
+            print(f'[warn] cannot play {path}: {e}')
+
     def eatSound(self):
-        self.game.mixer.music.load('static/audio/cat_eat.mp3')
-        self.game.mixer.music.play(0)
+        self._play_sound('static/audio/cat_eat.mp3')
 
     def goSound(self):
-        self.game.mixer.music.load('static/audio/cat_go.mp3')
-        self.game.mixer.music.play(0)
+        self._play_sound('static/audio/cat_go.mp3')
 
     def reset_game(self):
-        self.timer = self.init_timer
+        self.timer = float(self.init_timer)
         self.player.points = 0
+        self.score_value = 0
 
     def show_scoreboard(self):
-        showing_score = 1
-        while showing_score:
+        showing_score = True
+        while showing_score and self.app_running:
             self.screen.fill((255, 124, 100))
             self.draw_info(' *** SCOREBOARD *** ', 150, 100)
 
             for event in self.game.event.get():
+                if event.type == pygame.QUIT:
+                    showing_score = False
+                    self.app_running = False
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
-                        showing_score = 0
-                        self.game_start_screen()
+                        showing_score = False
 
             player_details = self.read_scoreboard()
-            self.draw_info(f'Player -- Score', 180, 140)
+            self.draw_info('Player -- Score', 180, 140)
 
             x, y = 180, 180
             for p, s in player_details:
@@ -133,26 +158,32 @@ class PetunaGame:
                 y += 30
 
             self.game.display.update()
+            self.clock.tick(60)
 
     def change_player_name(self):
         """
         new player name screen
         :return: player name
         """
-        inserting_new_name = 1
+        inserting_new_name = True
         new_name = ''
-        while inserting_new_name:
+        while inserting_new_name and self.app_running:
             self.screen.fill((255, 124, 100))
             self.draw_info('Insert new player name: ', 150, 150)
 
             for event in self.game.event.get():
+                if event.type == pygame.QUIT:
+                    inserting_new_name = False
+                    self.app_running = False
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_BACKSPACE:
                         new_name = new_name[:-1]
-                    if event.key == pygame.K_RETURN:
-                        self.player.player_name = new_name[:4].upper()
-                        self.game_start_screen()
-                        inserting_new_name = 0
+                    elif event.key == pygame.K_RETURN:
+                        if new_name.strip():
+                            self.player.player_name = new_name.strip()[:4].upper()
+                        inserting_new_name = False
+                    elif event.key == pygame.K_ESCAPE:
+                        inserting_new_name = False
                     else:
                         new_name += event.unicode
 
@@ -164,9 +195,8 @@ class PetunaGame:
         represents the start screen where user can select START/Change Player Name/SCOREBOARD
         :return: na
         """
-        fs = 1
-        new_player_name = ''
-        while fs:
+        fs = True
+        while fs and self.app_running:
             self.screen.fill((60, 60, 60))
 
             self.draw_info(' * Welcome To Petunia Game * ', 40, 25, 35)
@@ -179,7 +209,8 @@ class PetunaGame:
 
             for event in self.game.event.get():
                 if event.type == pygame.QUIT:
-                    go = 0
+                    fs = False
+                    self.app_running = False
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_DOWN:
                         if self.menu_cursor.pos_y < 200:
@@ -191,23 +222,18 @@ class PetunaGame:
 
                     if event.key == pygame.K_RETURN:
                         if self.menu_cursor.pos_y == 120:
-                            fs = 0
+                            fs = False
                             self.game_running = True
                             self.run_game()
 
-                        if self.menu_cursor.pos_y == 170:
-                            fs = 0
+                        elif self.menu_cursor.pos_y == 170:
                             self.change_player_name()
 
-                        if self.menu_cursor.pos_y == 220:
-                            fs = 0
+                        elif self.menu_cursor.pos_y == 220:
                             self.show_scoreboard()
-
 
             self.game.display.update()
             self.clock.tick(60)
-
-        self.game.quit()
 
     def game_over(self):
         """
@@ -216,27 +242,27 @@ class PetunaGame:
         """
 
         self.goSound()
-        go = 1
-        while go:
+        go = True
+        while go and self.app_running:
             self.game.display.update()
             self.screen.fill((60, 60, 60))
             self.draw_game_over()
+            self.draw_info('SPACE: play again   ESC: menu', 90, 260, 22)
 
             for event in self.game.event.get():
                 if event.type == pygame.QUIT:
-                    go = 0
+                    go = False
+                    self.app_running = False
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_SPACE:
-                        go = 0
+                        go = False
                         self.game_running = True
                         self.run_game()
+                        return
                     if event.key == pygame.K_ESCAPE:
-                        go = 0
-                        self.game_start_screen()
+                        go = False
 
             self.clock.tick(60)
-
-        self.game.quit()
 
     def run_game(self):
         """
@@ -248,7 +274,7 @@ class PetunaGame:
         self.cat.set_graph()
         self.treat.set_treat_pic()
 
-        while self.game_running:
+        while self.game_running and self.app_running:
 
             tmr = self.run_timmer()
             self.game.display.update()
@@ -265,11 +291,12 @@ class PetunaGame:
             for event in self.game.event.get():
                 if event.type == pygame.QUIT:
                     self.game_running = False
+                    self.app_running = False
 
             key_pressed = self.game.key.get_pressed()
 
             if key_pressed[pygame.K_ESCAPE]:
-                self.player.reset_points()
+                self.game_running = False
 
             if key_pressed[pygame.K_UP]:
                 if self.cat.pos_y - self.cat.catbox_offset > self.velocity:
@@ -297,14 +324,11 @@ class PetunaGame:
                     self.treat.rand_move()
                 self.score_value = self.player.points
 
-            print(self.cat.pos_x, self.cat.pos_y)
-
             if tmr == 0:
                 self.game_running = False
                 self.write_scoreboard(self.player.player_name, self.player.points)
                 self.game_over()
+                return
 
             self.game.display.update()
             self.clock.tick(60)
-
-        self.game.quit()
