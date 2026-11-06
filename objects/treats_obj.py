@@ -27,6 +27,8 @@ class TreatObj:
 
         self.vy = 5  # fall speed, px/frame; raised by the game as you score
 
+        self.pool = None  # optional skin pool (per-wave mix); None = SKINS
+
         self.selected_skin = None
         self.kind = 'good'
         self.points = 1
@@ -34,8 +36,8 @@ class TreatObj:
         self.treatimg = None
         self.treatrect = None
 
-    def set_treat_pic(self):
-        rndm_pic, kind, points = random.choice(SKINS)
+    def set_treat_pic(self, pool=None):
+        rndm_pic, kind, points = random.choice(pool or SKINS)
         treats_img = pygame.image.load(rndm_pic)
         treats_img = pygame.transform.scale(treats_img, (TREAT_SIZE, TREAT_SIZE))
         treats_img.convert()
@@ -59,7 +61,7 @@ class TreatObj:
         """Respawn at the top with a random x (treat drops from the sky)."""
         self.pos_x = random.randint(40, self.w - 40)
         self.pos_y = -40
-        self.set_treat_pic()
+        self.set_treat_pic(pool=self.pool)
 
     def update(self):
         """Fall one step. Returns True if it fell off-screen (missed)."""
