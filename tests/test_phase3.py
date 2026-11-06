@@ -116,3 +116,76 @@ def test_handle_eat_tracks_combo_and_caught(pg):
     pg.handle_eat()
     assert pg.combo == 0  # rotten resets combo
     assert pg.best_combo == 2  # longest kept
+
+
+# -- combined Phase 0+1+2+3 integration ---------------------------------
+
+def test_wave_pool_and_speed_apply_to_all_treats(pg):
+    pg.reset_game(mode='classic')
+    pg.elapsed = 20.0
+    pg._update_wave()  # Sugar Rush
+    assert pg.wave_index == 1
+    for t in pg.treats:
+        assert t.pool == WAVES[1]['skins']
+        assert t.vy == pytest.approx(WAVES[1]['base_speed'])
+
+
+def test_late_added_treats_inherit_current_wave_pool(pg):
+    pg.reset_game(mode='classic')
+    pg.elapsed = 40.0
+    pg._update_wave()  # Rotten Storm
+    pg.player.points = 25  # force 5 concurrent treats
+    pg.ensure_treats()
+    assert len(pg.treats) == 5
+    for t in pg.treats:
+        assert t.pool == WAVES[2]['skins']
+
+
+def test_wave_pool_respects_powerup_conversion(pg, monkeypatch):
+    import objects.treats_obj as treats_mod
+    monkeypatch.setattr(treats_mod, 'GOLDEN_TO_POWERUP_CHANCE', 1.0)
+    pg.reset_game(mode='classic')
+    golden_pool = [('static/images/treats_2.png', 'golden', 3)]
+    pg.treat.pool = golden_pool
+    pg.treat.set_treat_pic()
+    # golden-only window: forced conversion turns the roll into a power-up
+    assert pg.treat.kind == 'powerup'
+    assert pg.treat.power in treats_mod.POWERUP_TYPES
+
+
+def test_wave_speed_scales_multi_treat_updates(pg):
+    pg.reset_game(mode='classic')
+    pg.slowmo_timer = 5.0  # slowmo halves falls via speed_scale()
+    assert pg.speed_scale() == 0.5
+    for t in pg.treats:
+        t.vy = 6.0
+        t.pos_y = 100.0
+        t.update(1.0, speed_scale=pg.speed_scale())
+        assert t.pos_y == pytest.approx(103.0)  # 6 * 0.5 * dt
+
+
+def test_run_timmer_is_dt_correct(pg):
+    pg.reset_game(mode='classic')
+    pg.timer = 60.0
+    pg.run_timmer(dt=2.0)  # one slow frame ~= 2/60s
+    assert pg.elapsed == pytest.approx(2.0 / 60.0)
+    assert pg.timer == pytest.approx(60.0 - 2.0 / 60.0)
+
+
+def test_reset_clears_waves_bests_fields_and_reapplies_pool(pg):
+    pg.reset_game(mode='endless')
+    pg.wave_index = 2
+    pg.elapsed = 45.0
+    pg.combo = 5
+    pg.best_combo = 5
+    pg.treats_caught = 9
+    pg.reset_game(mode='classic')
+    assert pg.wave_index == 0
+    assert pg.elapsed == 0.0
+    assert pg.combo == 0
+    assert pg.best_combo == 0
+    assert pg.treats_caught == 0
+    assert pg.mode == 'classic'
+    for t in pg.treats:
+        assert t.pool == WAVES[0]['skins']
+        assert t.vy == pytest.approx(WAVES[0]['base_speed'])
