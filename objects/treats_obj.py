@@ -5,6 +5,11 @@ import pygame
 
 TREAT_SIZE = 90
 
+# Fair spawn band: keeps treats away from screen edges so the cat can
+# always reach them. Multi-treat spacing (no impossible rotten pairs)
+# is deferred to Phase 2 when concurrent treats land.
+SPAWN_MARGIN = 80
+
 # (image, kind, points). Bad treats cost a life instead of scoring.
 SKINS = [
     ('static/images/treats.png', 'good', 1),
@@ -23,10 +28,10 @@ class TreatObj:
     def __init__(self, w=1920, h=1080):
         self.w = w
         self.h = h
-        self.pos_x = random.randint(40, w - 40)
+        self.pos_x = self._fair_x(w)
         self.pos_y = -40  # start above the screen, falls in
 
-        self.vy = 5  # fall speed, px/frame; raised by the game as you score
+        self.vy = 5  # fall speed, px per 60-FPS frame; raised as you score
 
         self.selected_skin = None
         self.kind = 'good'
@@ -36,6 +41,13 @@ class TreatObj:
         self.treatrect = None
         self.base_img = None  # untransformed sprite; pulse scales from it
         self.missed_kind = None  # kind of the treat that last fell off-screen
+
+    def _fair_x(self, w=None):
+        w = self.w if w is None else w
+        lo, hi = SPAWN_MARGIN, w - SPAWN_MARGIN
+        if hi < lo:  # tiny playfield fallback
+            lo, hi = 40, w - 40
+        return random.randint(lo, hi)
 
     def set_treat_pic(self):
         rndm_pic, kind, points = random.choice(SKINS)
@@ -60,14 +72,14 @@ class TreatObj:
         self.h = h
 
     def rand_move(self):
-        """Respawn at the top with a random x (treat drops from the sky)."""
-        self.pos_x = random.randint(40, self.w - 40)
+        """Respawn at the top with a fair random x (treat drops from sky)."""
+        self.pos_x = self._fair_x()
         self.pos_y = -40
         self.set_treat_pic()
 
-    def update(self):
-        """Fall one step. Returns True if it fell off-screen (missed)."""
-        self.pos_y += self.vy
+    def update(self, dt=1.0):
+        """Fall one dt-scaled step. Returns True if fell off-screen (missed)."""
+        self.pos_y += self.vy * dt
         if self.pos_y > self.h + 60:
             self.missed_kind = self.kind  # game reads this to reset combo
             self.rand_move()
