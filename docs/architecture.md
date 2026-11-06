@@ -40,33 +40,39 @@ Stack: Python 3 + pygame-ce (>= 2.5), SQLite (stdlib), no other dependencies.
 
 ## 4. Rendering
 
-- Fixed 500×500 window (`set_mode([500, 500])`).
+- Fixed 1920×1080 window (1080p, `set_mode([1920, 1080])`).
 - Per frame: `screen.fill(...)` → blit cat + treat → HUD text → `display.update()`.
 - All text via `pygame.font.SysFont('comicsans', size, bold)` with
   default-font fallback on systems without it.
-- HUD: `Score: N` (top-left), `Player: NAME` (top-right, x=320),
-  `Time: Ns` (below player) during matches.
+- HUD: `Score: N` (top-left), `Lives: N` below it, `Player: NAME`
+  (top-right), `Time: Ns` below player during matches.
 - No sprite groups, no layers — direct blits each frame.
 
 ## 5. Game loop (`run_game`)
 
-1. `reset_game()` — timer → 60.0s, points/score → 0.
-2. `cat.set_graph()` / `treat.set_treat_pic()` load & scale images.
+1. `reset_game()` — timer → 60.0s, points/score → 0, lives → 9,
+   fall speed → base, cat to bottom-center.
+2. `cat.set_graph()` / `treat.set_treat_pic()` load & scale images
+   (cat 140px, treats 90px).
 3. Each tick: `run_timmer()` (−1/60s, clamps at 0) → clear → blit →
+   `treat.update()` (falls `vy` px; respawns at top if missed) →
    `treat.spawn()` + `cat.spawn()` (rect.center ← pos) → poll QUIT →
    read `key.get_pressed()` for movement → AABB collision check →
-   score + `rand_move()` on eat → timer 0 → `write_scoreboard()` +
-   `game_over()`.
+   `handle_eat()` → lives 0 → `end_game('Out of lives!')`, timer 0 →
+   `end_game("Time's up!")` (score persisted + `game_over()`).
 4. Movement: 10 px/tick, clamped inside the window with
    `catbox_offset` margins. ESC exits the match.
 
 ## 6. Collision & scoring
 
 - `catrect.colliderect(treatrect)` — cat 60×60, treat 40×40.
-- Normal treat (`treats.png`): +1. Golden (`treats_2.png`): +3
-  (`add_special_points`). Skin identity is the image basename
-  (`selected_skin`), re-rolled randomly on every respawn.
-- Treat respawn: uniform random x ∈ [1, 482], y ∈ [1, 388].
+- Good (`treats.png`): +1. Golden (`treats_2.png`): +3.
+  Rotten (`treats_bad.png`, ~2/7 of spawns): −1 life, no points.
+  Outcome derives from `kind`/`points` (`handle_eat()`); skin basename
+  (`selected_skin`) is kept for debugging/screenshots.
+- Fall speed starts at 5 px/frame, +0.15 per good eat, capped at 12.
+- Respawn (`rand_move()`): x ∈ [40, W−40], y = −40 (drops from the sky).
+  Falling off the bottom respawns silently — no penalty for misses.
 
 ## 7. Timer
 

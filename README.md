@@ -9,7 +9,8 @@ Tech used:
   - pytest + ruff (dev), enforced by CI on the local runner `vmi3706455`
 
 Game logic:
-  - catch as many treats as you can while the clock is still ticking
+  - catch the treats as they drop from the sky while the clock is still ticking
+  - dodge the rotten treats (red X) — each one eaten costs a life; you have 9
 
 ## How to run
 
@@ -45,8 +46,10 @@ Game over:
   - SPACE — play again
   - ESC — back to menu
 
-Scoring: normal treat = 1 pt, golden treat (`treats_2.png`) = 3 pts.
-Game length: 60 seconds. Scores are saved in `scoreboard_db/scores_db` (SQLite).
+Scoring: normal treat = 1 pt, golden treat = 3 pts, rotten treat = -1 life.
+Treats fall faster the more you eat. Game length: 60 seconds or until all
+9 lives are lost — whichever comes first. Window: 1920x1080 (1080p).
+Scores are saved in `scoreboard_db/scores_db` (SQLite).
 
 ## Development
 

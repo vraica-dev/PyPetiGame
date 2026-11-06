@@ -20,8 +20,8 @@ class PetunaGame:
         self.game = pygame
         self.game_running = False
         self.app_running = True
-        self.wndw_h = 500
-        self.wndw_w = 500
+        self.wndw_w = 1920
+        self.wndw_h = 1080
 
         self.db_path = os.path.join(BASE_DIR, 'scoreboard_db', 'scores_db')
         self.db_conn = self.init_db()
@@ -34,18 +34,21 @@ class PetunaGame:
         self.game.display.set_caption('Petunia Game')
 
         self.clock = self.game.time.Clock()
-        self.screen = self.game.display.set_mode([self.wndw_h, self.wndw_w])
+        self.screen = self.game.display.set_mode([self.wndw_w, self.wndw_h])
 
-        self.cat = PetunaObj()
-        self.treat = TreatObj()
+        self.cat = PetunaObj(self.wndw_w, self.wndw_h)
+        self.treat = TreatObj(self.wndw_w, self.wndw_h)
         self.player = PlayerObj()
         self.menu_cursor = CursorObj()
 
         self.init_timer = 60
         self.timer = float(self.init_timer)
 
-        self.velocity = 10
+        self.velocity = 14
+        self.base_fall_speed = 5
+        self.fall_speed = self.base_fall_speed
         self.score_value = 0
+        self.game_over_reason = ''
 
     def init_db(self):
         conn = sqlite3.connect(self.db_path)
@@ -87,24 +90,27 @@ class PetunaGame:
             render = font.render(text_line, True, (255, 255, 255))
             self.screen.blit(render, (x, y))
 
+    def draw_centered(self, text, y, font_size=36):
+        font = self.game.font.SysFont('comicsans', font_size, 1)
+        render = font.render(text, True, (255, 255, 255))
+        rect = render.get_rect(center=(self.wndw_w // 2, y))
+        self.screen.blit(render, rect)
+
     def draw_cursor(self, txt):
         font = self.game.font.SysFont('comicsans', self.menu_cursor.font_size, 1)
         render_font = font.render(txt, True, (255, 255, 255))
         self.screen.blit(render_font, (self.menu_cursor.pos_x, self.menu_cursor.pos_y))
 
     def draw_game_over(self):
-        font = self.game.font.SysFont('comicsans', 36, 1)
-        render_go = font.render('* G A M E O V E R *', True, (255, 255, 255))
-        render_player = font.render(f'Player:  {self.player.player_name}', True, (255, 255, 255))
-        render_final_score = font.render(f'Final Score: {self.player.points}', True, (255, 255, 255))
-
-        self.screen.blit(render_go, (110, 90))
-        self.screen.blit(render_player, (160, 190))
-        self.screen.blit(render_final_score, (140, 140))
+        self.draw_centered('* G A M E O V E R *', 350, 48)
+        self.draw_centered(self.game_over_reason, 430, 32)
+        self.draw_centered(f'Final Score: {self.player.points}', 540, 40)
+        self.draw_centered(f'Player:  {self.player.player_name}', 620, 40)
 
     def drawing(self):
         self.draw_info()
-        self.draw_info(f'Player: {self.player.player_name}', 320, 10)
+        self.draw_info(f'Lives: {self.player.lives}', 10, 50, 28)
+        self.draw_info(f'Player: {self.player.player_name}', self.wndw_w - 230, 10, 28)
 
     def run_timmer(self):
         if self.timer > 0:
@@ -128,19 +134,35 @@ class PetunaGame:
     def eatSound(self):
         self._play_sound('static/audio/cat_eat.mp3')
 
+    def badSound(self):
+        self._play_sound('static/audio/cat_go.mp3')
+
     def goSound(self):
         self._play_sound('static/audio/cat_go.mp3')
 
     def reset_game(self):
         self.timer = float(self.init_timer)
-        self.player.points = 0
+        self.player.reset()
         self.score_value = 0
+        self.fall_speed = self.base_fall_speed
+        self.game_over_reason = ''
+        self.cat.pos_x = self.wndw_w // 2
+        self.cat.pos_y = self.wndw_h - 130
+        self.treat.set_bounds(self.wndw_w, self.wndw_h)
+        self.treat.vy = self.fall_speed
+
+    def end_game(self, reason):
+        self.game_running = False
+        self.game_over_reason = reason
+        self.write_scoreboard(self.player.player_name, self.player.points)
+        self.game_over()
 
     def show_scoreboard(self):
+        cx = self.wndw_w // 2
         showing_score = True
         while showing_score and self.app_running:
             self.screen.fill((255, 124, 100))
-            self.draw_info(' *** SCOREBOARD *** ', 150, 100)
+            self.draw_info(' *** SCOREBOARD *** ', cx - 170, 200, 36)
 
             for event in self.game.event.get():
                 if event.type == pygame.QUIT:
@@ -151,12 +173,12 @@ class PetunaGame:
                         showing_score = False
 
             player_details = self.read_scoreboard()
-            self.draw_info('Player -- Score', 180, 140)
+            self.draw_info('Player -- Score', cx - 140, 280, 30)
 
-            x, y = 180, 180
+            x, y = cx - 140, 330
             for p, s in player_details:
-                self.draw_info(f'{p}     --      {s}', x, y)
-                y += 30
+                self.draw_info(f'{p}     --      {s}', x, y, 30)
+                y += 45
 
             self.game.display.update()
             self.clock.tick(60)
@@ -166,11 +188,12 @@ class PetunaGame:
         new player name screen
         :return: player name
         """
+        cx = self.wndw_w // 2
         inserting_new_name = True
         new_name = ''
         while inserting_new_name and self.app_running:
             self.screen.fill((255, 124, 100))
-            self.draw_info('Insert new player name: ', 150, 150)
+            self.draw_info('Insert new player name: ', cx - 260, 400, 36)
 
             for event in self.game.event.get():
                 if event.type == pygame.QUIT:
@@ -188,7 +211,7 @@ class PetunaGame:
                     else:
                         new_name += event.unicode
 
-            self.draw_info(f'{new_name}', 150, 180)
+            self.draw_info(f'{new_name}', cx - 260, 460, 36)
             self.game.display.update()
 
     def game_start_screen(self):
@@ -196,16 +219,20 @@ class PetunaGame:
         represents the start screen where user can select START/Change Player Name/SCOREBOARD
         :return: na
         """
+        cx = self.wndw_w // 2
+        rows = [430, 510, 590]
+        items = ['START GAME', 'PLAYER NAME', 'SCOREBOARD']
+        sel = 0
         fs = True
         while fs and self.app_running:
             self.screen.fill((60, 60, 60))
 
-            self.draw_info(' * Welcome To Petunia Game * ', 40, 25, 35)
-            self.draw_info(' ************************************* ', 40, 70, 35)
-            self.draw_info('  START GAME ', 150, 120, 30)
-            self.draw_info('  PLAYER NAME ', 145, 170, 30)
-            self.draw_info('  SCOREBOARD ', 144, 220, 30)
-
+            self.draw_centered('* Welcome To Petunia Game *', 180, 44)
+            self.draw_centered('Catch treats, dodge the rotten ones!  9 lives.', 250, 28)
+            for i, item in enumerate(items):
+                self.draw_info(f'  {item} ', cx - 160, rows[i], 34)
+            self.menu_cursor.pos_x = cx - 230
+            self.menu_cursor.pos_y = rows[sel]
             self.draw_cursor('>>')
 
             for event in self.game.event.get():
@@ -214,23 +241,19 @@ class PetunaGame:
                     self.app_running = False
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_DOWN:
-                        if self.menu_cursor.pos_y < 200:
-                            self.menu_cursor.pos_y += 50
+                        sel = (sel + 1) % len(rows)
 
                     if event.key == pygame.K_UP:
-                        if self.menu_cursor.pos_y > 120:
-                            self.menu_cursor.pos_y -= 50
+                        sel = (sel - 1) % len(rows)
 
                     if event.key == pygame.K_RETURN:
-                        if self.menu_cursor.pos_y == 120:
+                        if sel == 0:
                             fs = False
                             self.game_running = True
                             self.run_game()
-
-                        elif self.menu_cursor.pos_y == 170:
+                        elif sel == 1:
                             self.change_player_name()
-
-                        elif self.menu_cursor.pos_y == 220:
+                        elif sel == 2:
                             self.show_scoreboard()
 
             self.game.display.update()
@@ -238,7 +261,7 @@ class PetunaGame:
 
     def game_over(self):
         """
-        screen used when the game is done - when the timer is done;
+        screen used when the game is done - timer done or lives lost;
         :return: na
         """
 
@@ -248,7 +271,7 @@ class PetunaGame:
             self.game.display.update()
             self.screen.fill((60, 60, 60))
             self.draw_game_over()
-            self.draw_info('SPACE: play again   ESC: menu', 90, 260, 22)
+            self.draw_centered('SPACE: play again   ESC: menu', 760, 26)
 
             for event in self.game.event.get():
                 if event.type == pygame.QUIT:
@@ -265,9 +288,24 @@ class PetunaGame:
 
             self.clock.tick(60)
 
+    def handle_eat(self):
+        """Score (or lose a life for) the treat currently touching the cat."""
+        if self.treat.kind == 'bad':
+            self.badSound()
+            self.player.lose_life()
+        else:
+            self.eatSound()
+            self.player.add_points(self.treat.points)
+            # treats fall faster as you score — gentle difficulty ramp
+            self.fall_speed = min(self.fall_speed + 0.15, 12)
+            self.treat.vy = self.fall_speed
+        self.score_value = self.player.points
+        self.treat.rand_move()
+        self.treat.vy = self.fall_speed
+
     def run_game(self):
         """
-        main screen; game itself;
+        main screen; game itself — treats drop from the sky;
         :return: na
         """
 
@@ -284,8 +322,9 @@ class PetunaGame:
             self.screen.blit(self.treat.treatimg, self.treat.treatrect)
             self.drawing()
 
-            self.draw_info(f'Time: {str(int(self.timer))}', 390, 30)
+            self.draw_info(f'Time: {int(self.timer)}', self.wndw_w - 230, 50, 28)
 
+            self.treat.update()  # treats drop from the sky
             self.treat.spawn()
             self.cat.spawn()
 
@@ -304,31 +343,26 @@ class PetunaGame:
                     self.cat.pos_y -= self.velocity
 
             if key_pressed[pygame.K_DOWN]:
-                if self.cat.pos_y - self.cat.catbox_offset * 2 < (500 - self.cat.cat_H - self.velocity):
+                if self.cat.pos_y < (self.wndw_h - self.cat.cat_H - self.velocity):
                     self.cat.pos_y += self.velocity
 
             if key_pressed[pygame.K_LEFT]:
                 if self.cat.pos_x - self.cat.catbox_offset > self.velocity:
-                    self.cat.pos_x -= 10
+                    self.cat.pos_x -= self.velocity
 
             if key_pressed[pygame.K_RIGHT]:
-                if self.cat.pos_x - self.cat.catbox_offset * 2 < (500 - self.cat.cat_H - self.velocity):
-                    self.cat.pos_x += 10
+                if self.cat.pos_x < (self.wndw_w - self.cat.cat_H - self.velocity):
+                    self.cat.pos_x += self.velocity
 
             if self.cat.catrect.colliderect(self.treat.treatrect):
-                self.eatSound()
-                if self.treat.selected_skin == 'treats_2.png':
-                    self.player.add_special_points()
-                    self.treat.rand_move()
-                else:
-                    self.player.add_point()
-                    self.treat.rand_move()
-                self.score_value = self.player.points
+                self.handle_eat()
+
+            if not self.player.is_alive():
+                self.end_game('Out of lives!')
+                return
 
             if tmr == 0:
-                self.game_running = False
-                self.write_scoreboard(self.player.player_name, self.player.points)
-                self.game_over()
+                self.end_game("Time's up!")
                 return
 
             self.game.display.update()

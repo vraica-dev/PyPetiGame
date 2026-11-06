@@ -3,15 +3,15 @@ import pygame
 
 
 class PetunaObj:
-    def __init__(self):
-        self.pos_x = 250
-        self.pos_y = 470
+    def __init__(self, w=1920, h=1080):
+        self.pos_x = w // 2
+        self.pos_y = h - 130
         self.catimg = None
         self.catrect = None
-        self.catbox_offset = 20
+        self.catbox_offset = 40
 
-        self.cat_H = 60
-        self.cat_W = 60
+        self.cat_H = 140
+        self.cat_W = 140
 
         # self.set_graph()
 
