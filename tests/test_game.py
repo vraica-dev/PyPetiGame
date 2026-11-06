@@ -77,6 +77,7 @@ def test_treat_drops_from_sky_within_bounds(pg):
 
 def test_treat_falls_and_missed_respawns_at_top(pg):
     pg.treat.set_treat_pic()
+    pg.treat.fast = False  # deterministic: fast rottens fall 2x
     y0 = pg.treat.pos_y
     assert pg.treat.update() is False
     assert pg.treat.pos_y == y0 + pg.treat.vy
@@ -87,11 +88,14 @@ def test_treat_falls_and_missed_respawns_at_top(pg):
 
 def test_treat_kinds_include_bad_with_zero_points(pg):
     kinds = set()
-    for _ in range(100):
+    for _ in range(200):
         pg.treat.set_treat_pic()
         kinds.add(pg.treat.kind)
         if pg.treat.kind == 'bad':
             assert pg.treat.points == 0
+        elif pg.treat.kind == 'powerup':
+            assert pg.treat.power in ('magnet', 'shield', 'slowmo', 'frenzy')
+            assert pg.treat.selected_skin == 'treats_2.png'  # reused asset
         else:
             assert pg.treat.points in (1, 3)
     assert 'bad' in kinds  # bad treats actually appear
@@ -199,6 +203,7 @@ def test_timer_scales_with_dt(pg):
 
 def test_treat_fall_scales_with_dt(pg):
     pg.treat.set_treat_pic()
+    pg.treat.fast = False  # deterministic: fast rottens fall 2x
     pg.treat.pos_y = 100.0
     vy = pg.treat.vy
     pg.treat.update(dt=2.0)

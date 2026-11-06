@@ -7,7 +7,20 @@ from objects.cursor_obj import CursorObj
 from objects.juice_obj import JuiceState, ParticleBurst
 from objects.petun_obj import PetunaObj
 from objects.player_obj import PlayerObj
-from objects.treats_obj import TreatObj
+from objects.treats_obj import MIN_SPAWN_DISTANCE, TreatObj
+
+# Phase 2 — Depth tuning.
+START_TREAT_COUNT = 3
+MAX_TREAT_COUNT = 5
+# Points thresholds that grow the concurrent treat count 3 -> 4 -> 5.
+TREAT_COUNT_STEPS = (10, 20)
+NEAR_MISS_THRESHOLD = 50  # px horizontal distance for the rotten dodge bonus
+NEAR_MISS_POINTS = 1
+MAGNET_DURATION = 5.0   # seconds good treats drift toward the cat
+SHIELD_DURATION = 8.0   # seconds rotten treats cost no life
+SLOWMO_DURATION = 5.0   # seconds treats fall at half speed
+FRENZY_DURATION = 8.0   # seconds points are doubled
+MAGNET_PULL = 7  # px/frame good treats slide toward the cat
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -41,6 +54,18 @@ class PetunaGame:
 
         self.cat = PetunaObj(self.wndw_w, self.wndw_h)
         self.treat = TreatObj(self.wndw_w, self.wndw_h)
+        # Phase 2: concurrent treats scale 3-5 with score. self.treat is
+        # kept as an alias of self.treats[0] for backwards compatibility.
+        self.treats = [
+            self.treat,
+            TreatObj(self.wndw_w, self.wndw_h),
+            TreatObj(self.wndw_w, self.wndw_h),
+        ]
+        # Power-up effect timers (seconds remaining, 0 = inactive).
+        self.magnet_timer = 0.0
+        self.shield_timer = 0.0
+        self.slowmo_timer = 0.0
+        self.frenzy_timer = 0.0
         self.player = PlayerObj()
         self.menu_cursor = CursorObj()
 
@@ -282,6 +307,7 @@ class PetunaGame:
         'good': (255, 220, 130),
         'golden': (255, 215, 0),
         'bad': (120, 200, 120),
+        'powerup': (255, 200, 60),
     }
 
     def combo_mult(self):
@@ -303,9 +329,93 @@ class PetunaGame:
         self.juice = JuiceState()
         self.cat.pos_x = self.wndw_w // 2
         self.cat.pos_y = self.wndw_h - 130
+        self.magnet_timer = 0.0
+        self.shield_timer = 0.0
+        self.slowmo_timer = 0.0
+        self.frenzy_timer = 0.0
         self.cat.lean = 0.0
-        self.treat.set_bounds(self.wndw_w, self.wndw_h)
-        self.treat.vy = self.fall_speed
+        while len(self.treats) > START_TREAT_COUNT:
+            self.treats.pop()
+        while len(self.treats) < START_TREAT_COUNT:
+            self.treats.append(TreatObj(self.wndw_w, self.wndw_h))
+        self.treat = self.treats[0]
+        for t in self.treats:
+            t.set_bounds(self.wndw_w, self.wndw_h)
+            t.vy = self.fall_speed
+
+    # -- Phase 2: depth ---------------------------------------------
+
+    def desired_treat_count(self):
+        """Concurrent treats scale 3-5 with score (THE intensity fix)."""
+        count = START_TREAT_COUNT
+        for step in TREAT_COUNT_STEPS:
+            if self.player.points >= step:
+                count += 1
+        return min(count, MAX_TREAT_COUNT)
+
+    def ensure_treats(self):
+        """Grow the treat list toward the desired count (never shrinks)."""
+        while len(self.treats) < self.desired_treat_count():
+            t = TreatObj(self.wndw_w, self.wndw_h)
+            t.vy = self.fall_speed
+            t.set_treat_pic()
+            # Fair spawn: keep a min x-distance from siblings.
+            t.rand_move(others=self.treats, min_dist=MIN_SPAWN_DISTANCE)
+            t.vy = self.fall_speed
+            self.treats.append(t)
+        self.treat = self.treats[0]
+
+    def tick_power_timers(self, dt=1 / 60):
+        for attr in (
+            'magnet_timer', 'shield_timer', 'slowmo_timer', 'frenzy_timer'
+        ):
+            val = getattr(self, attr) - dt
+            setattr(self, attr, max(0.0, val))
+
+    @property
+    def magnet_active(self):
+        return self.magnet_timer > 0
+
+    @property
+    def shield_active(self):
+        return self.shield_timer > 0
+
+    @property
+    def slowmo_active(self):
+        return self.slowmo_timer > 0
+
+    @property
+    def frenzy_active(self):
+        return self.frenzy_timer > 0
+
+    def speed_scale(self):
+        return 0.5 if self.slowmo_active else 1.0
+
+    def score_multiplier(self):
+        return 2 if self.frenzy_active else 1
+
+    def activate_powerup(self, power):
+        if power == 'magnet':
+            self.magnet_timer = MAGNET_DURATION
+        elif power == 'shield':
+            self.shield_timer = SHIELD_DURATION
+        elif power == 'slowmo':
+            self.slowmo_timer = SLOWMO_DURATION
+        elif power == 'frenzy':
+            self.frenzy_timer = FRENZY_DURATION
+
+    def handle_near_miss(self, treat):
+        """+1 when a rotten treat falls past within ~50px, untouched."""
+        if (
+            treat.last_miss_kind == 'bad'
+            and not treat.last_miss_touched
+            and treat.last_miss_x is not None
+            and abs(treat.last_miss_x - self.cat.pos_x) <= NEAR_MISS_THRESHOLD
+        ):
+            self.player.add_points(NEAR_MISS_POINTS)
+            self.score_value = self.player.points
+            return True
+        return False
 
     def end_game(self, reason):
         self.game_running = False
@@ -444,38 +554,66 @@ class PetunaGame:
 
             self.clock.tick(60)
 
-    def handle_eat(self):
-        """Score (or lose a life for) the treat currently touching the cat."""
-        cx, cy = self.treat.pos_x, self.treat.pos_y
-        if self.treat.kind == 'bad':
-            self.badSound()
-            self.player.lose_life()
-            self.reset_combo()  # rotten resets the combo
-            self.juice.shake(dur=0.35, mag=14)  # rotten: shake ...
-            self.juice.flash((255, 40, 40), dur=0.25)  # ... + red flash
+    def handle_eat(self, treat=None):
+        """Score (or lose a life for) the treat touching the cat.
+
+        Phase 1 juice (combo / bursts / shake / flash) combined with
+        Phase 2 depth (power-ups, shield absorb, frenzy doubling).
+        ``treat`` defaults to the backwards-compat alias ``self.treat``
+        (``self.treats[0]``); pass an explicit treat for multi-treat eats.
+        """
+        if treat is None:
+            treat = self.treat
+        cx, cy = treat.pos_x, treat.pos_y
+        treat.touched = True
+        frenzy = self.score_multiplier()
+        if treat.kind == 'powerup':
+            self.eatSound()
+            self.activate_powerup(treat.power)
+            self.combo += 1  # power-up keeps the streak alive
+            if self.combo_mult() >= 2:
+                self.comboSound()  # combo-up fanfare on top of the catch
+            self.player.add_points(1 * self.combo_mult() * frenzy)
             self.bursts.append(
-                ParticleBurst(cx, cy, self.BURST_COLORS['bad'], count=10)
+                ParticleBurst(cx, cy, self.BURST_COLORS['powerup'])
             )
+        elif treat.kind == 'bad':
+            if self.shield_active:
+                self.eatSound()  # shield absorbs the rotten treat
+                self.bursts.append(
+                    ParticleBurst(cx, cy, self.BURST_COLORS['bad'], count=6)
+                )
+            else:
+                self.badSound()
+                self.player.lose_life()
+                self.reset_combo()  # rotten resets the combo
+                self.juice.shake(dur=0.35, mag=14)  # rotten: shake ...
+                self.juice.flash((255, 40, 40), dur=0.25)  # ... + red flash
+                self.bursts.append(
+                    ParticleBurst(cx, cy, self.BURST_COLORS['bad'], count=10)
+                )
         else:
             self.combo += 1  # consecutive good catch builds the combo
-            mult = self.combo_mult()
-            if self.treat.kind == 'golden':
+            mult = self.combo_mult() * frenzy
+            if treat.kind == 'golden':
                 self.goldenSound()  # distinct path from normal catch
                 self.juice.flash((255, 215, 0), dur=0.3)  # golden flash
             else:
                 self.eatSound()
-            if mult >= 2:
+            if self.combo_mult() >= 2:
                 self.comboSound()  # combo-up fanfare on top of the catch
-            self.player.add_points(self.treat.points * mult)
+            self.player.add_points(treat.points * mult)
             self.bursts.append(
-                ParticleBurst(cx, cy, self.BURST_COLORS[self.treat.kind])
+                ParticleBurst(cx, cy, self.BURST_COLORS[treat.kind])
             )
             # treats fall faster as you score — gentle difficulty ramp
             self.fall_speed = min(self.fall_speed + 0.15, 12)
-            self.treat.vy = self.fall_speed
+            for t in self.treats:
+                t.vy = self.fall_speed
         self.score_value = self.player.points
-        self.treat.rand_move()
-        self.treat.vy = self.fall_speed
+        treat.rand_move(others=self.treats, min_dist=MIN_SPAWN_DISTANCE)
+        treat.vy = self.fall_speed
+        self.ensure_treats()
 
     def run_game(self):
         """
@@ -485,7 +623,14 @@ class PetunaGame:
 
         self.reset_game()
         self.cat.set_graph()
-        self.treat.set_treat_pic()
+        for t in self.treats:
+            t.set_treat_pic()
+        # Fair opening spread: no overlapping spawns.
+        for i, t in enumerate(self.treats):
+            t.rand_move(
+                others=self.treats[:i], min_dist=MIN_SPAWN_DISTANCE
+            )
+            t.vy = self.fall_speed
         self.paused = False
 
         while self.game_running and self.app_running:
@@ -514,6 +659,7 @@ class PetunaGame:
                 continue
 
             tmr = self.run_timmer(dt)
+            self.tick_power_timers(dt / 60.0)  # power timers run in seconds
             now_s = self.game.time.get_ticks() / 1000.0
             self.game.display.update()
             self.screen.fill((52, 106, 107))
@@ -521,9 +667,8 @@ class PetunaGame:
             self.screen.blit(
                 self.cat.catimg, self.cat.catrect.move(ox, oy)
             )
-            self.screen.blit(
-                self.treat.treatimg, self.treat.treatrect.move(ox, oy)
-            )
+            for t in self.treats:
+                self.screen.blit(t.treatimg, t.treatrect.move(ox, oy))
             for burst in self.bursts:
                 burst.draw(self.screen)
             self.juice.draw_flash(self.screen)
@@ -532,14 +677,24 @@ class PetunaGame:
             self.draw_right(f'Time: {int(self.timer)}', self.wndw_w - 20, 50, 30)
             self.draw_centered('P: pause   M: mute', 40, 22)
 
-            self.treat.update(dt)  # treats drop from the sky (dt-scaled)
-            if self.treat.missed_kind in ('good', 'golden'):
-                self.reset_combo()  # missed good treat resets the combo
-                self.treat.missed_kind = None
-            elif self.treat.missed_kind is not None:
-                self.treat.missed_kind = None  # rotten missed: no penalty
-            self.treat.pulse(now_s)  # squash & stretch while falling
-            self.treat.spawn()
+            for t in list(self.treats):
+                # Magnet: good treats drift toward the cat (dt-scaled).
+                if self.magnet_active and t.kind in ('good', 'golden'):
+                    if t.pos_x < self.cat.pos_x:
+                        t.pos_x = min(t.pos_x + MAGNET_PULL * dt,
+                                      self.cat.pos_x)
+                    elif t.pos_x > self.cat.pos_x:
+                        t.pos_x = max(t.pos_x - MAGNET_PULL * dt,
+                                      self.cat.pos_x)
+                # treats drop from the sky (dt-scaled, slowmo halves falls)
+                missed = t.update(dt, speed_scale=self.speed_scale())
+                if missed:
+                    self.handle_near_miss(t)
+                    if t.missed_kind in ('good', 'golden'):
+                        self.reset_combo()  # missed good resets the combo
+                    t.missed_kind = None  # rotten missed: no penalty
+                t.pulse(now_s)  # squash & stretch while falling
+                t.spawn()
             self.juice.update(dt)
             for burst in self.bursts:
                 burst.update(dt)
@@ -575,8 +730,10 @@ class PetunaGame:
                 if self.cat.pos_x < (self.wndw_w - self.cat.cat_H - self.velocity):
                     self.cat.pos_x += step
 
-            if self.cat.catrect.colliderect(self.treat.treatrect):
-                self.handle_eat()
+            for t in list(self.treats):
+                if self.cat.catrect.colliderect(t.treatrect):
+                    self.handle_eat(t)
+                    break
 
             if not self.player.is_alive():
                 self.end_game('Out of lives!')
