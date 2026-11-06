@@ -87,11 +87,14 @@ def test_treat_falls_and_missed_respawns_at_top(pg):
 
 def test_treat_kinds_include_bad_with_zero_points(pg):
     kinds = set()
-    for _ in range(100):
+    for _ in range(200):
         pg.treat.set_treat_pic()
         kinds.add(pg.treat.kind)
         if pg.treat.kind == 'bad':
             assert pg.treat.points == 0
+        elif pg.treat.kind == 'powerup':
+            assert pg.treat.power in ('magnet', 'shield', 'slowmo', 'frenzy')
+            assert pg.treat.selected_skin == 'treats_2.png'  # reused asset
         else:
             assert pg.treat.points in (1, 3)
     assert 'bad' in kinds  # bad treats actually appear

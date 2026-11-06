@@ -6,7 +6,20 @@ import pygame
 from objects.cursor_obj import CursorObj
 from objects.petun_obj import PetunaObj
 from objects.player_obj import PlayerObj
-from objects.treats_obj import TreatObj
+from objects.treats_obj import MIN_SPAWN_DISTANCE, TreatObj
+
+# Phase 2 — Depth tuning.
+START_TREAT_COUNT = 3
+MAX_TREAT_COUNT = 5
+# Points thresholds that grow the concurrent treat count 3 -> 4 -> 5.
+TREAT_COUNT_STEPS = (10, 20)
+NEAR_MISS_THRESHOLD = 50  # px horizontal distance for the rotten dodge bonus
+NEAR_MISS_POINTS = 1
+MAGNET_DURATION = 5.0   # seconds good treats drift toward the cat
+SHIELD_DURATION = 8.0   # seconds rotten treats cost no life
+SLOWMO_DURATION = 5.0   # seconds treats fall at half speed
+FRENZY_DURATION = 8.0   # seconds points are doubled
+MAGNET_PULL = 7  # px/frame good treats slide toward the cat
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -38,6 +51,18 @@ class PetunaGame:
 
         self.cat = PetunaObj(self.wndw_w, self.wndw_h)
         self.treat = TreatObj(self.wndw_w, self.wndw_h)
+        # Phase 2: concurrent treats scale 3-5 with score. self.treat is
+        # kept as an alias of self.treats[0] for backwards compatibility.
+        self.treats = [
+            self.treat,
+            TreatObj(self.wndw_w, self.wndw_h),
+            TreatObj(self.wndw_w, self.wndw_h),
+        ]
+        # Power-up effect timers (seconds remaining, 0 = inactive).
+        self.magnet_timer = 0.0
+        self.shield_timer = 0.0
+        self.slowmo_timer = 0.0
+        self.frenzy_timer = 0.0
         self.player = PlayerObj()
         self.menu_cursor = CursorObj()
 
@@ -176,8 +201,92 @@ class PetunaGame:
         self.game_over_reason = ''
         self.cat.pos_x = self.wndw_w // 2
         self.cat.pos_y = self.wndw_h - 130
-        self.treat.set_bounds(self.wndw_w, self.wndw_h)
-        self.treat.vy = self.fall_speed
+        self.magnet_timer = 0.0
+        self.shield_timer = 0.0
+        self.slowmo_timer = 0.0
+        self.frenzy_timer = 0.0
+        while len(self.treats) > START_TREAT_COUNT:
+            self.treats.pop()
+        while len(self.treats) < START_TREAT_COUNT:
+            self.treats.append(TreatObj(self.wndw_w, self.wndw_h))
+        self.treat = self.treats[0]
+        for t in self.treats:
+            t.set_bounds(self.wndw_w, self.wndw_h)
+            t.vy = self.fall_speed
+
+    # -- Phase 2: depth ---------------------------------------------
+
+    def desired_treat_count(self):
+        """Concurrent treats scale 3-5 with score (THE intensity fix)."""
+        count = START_TREAT_COUNT
+        for step in TREAT_COUNT_STEPS:
+            if self.player.points >= step:
+                count += 1
+        return min(count, MAX_TREAT_COUNT)
+
+    def ensure_treats(self):
+        """Grow the treat list toward the desired count (never shrinks)."""
+        while len(self.treats) < self.desired_treat_count():
+            t = TreatObj(self.wndw_w, self.wndw_h)
+            t.vy = self.fall_speed
+            t.set_treat_pic()
+            # Fair spawn: keep a min x-distance from siblings.
+            t.rand_move(others=self.treats, min_dist=MIN_SPAWN_DISTANCE)
+            t.vy = self.fall_speed
+            self.treats.append(t)
+        self.treat = self.treats[0]
+
+    def tick_power_timers(self, dt=1 / 60):
+        for attr in (
+            'magnet_timer', 'shield_timer', 'slowmo_timer', 'frenzy_timer'
+        ):
+            val = getattr(self, attr) - dt
+            setattr(self, attr, max(0.0, val))
+
+    @property
+    def magnet_active(self):
+        return self.magnet_timer > 0
+
+    @property
+    def shield_active(self):
+        return self.shield_timer > 0
+
+    @property
+    def slowmo_active(self):
+        return self.slowmo_timer > 0
+
+    @property
+    def frenzy_active(self):
+        return self.frenzy_timer > 0
+
+    def speed_scale(self):
+        return 0.5 if self.slowmo_active else 1.0
+
+    def score_multiplier(self):
+        return 2 if self.frenzy_active else 1
+
+    def activate_powerup(self, power):
+        if power == 'magnet':
+            self.magnet_timer = MAGNET_DURATION
+        elif power == 'shield':
+            self.shield_timer = SHIELD_DURATION
+        elif power == 'slowmo':
+            self.slowmo_timer = SLOWMO_DURATION
+        elif power == 'frenzy':
+            self.frenzy_timer = FRENZY_DURATION
+
+    def handle_near_miss(self, treat):
+        """+1 when a rotten treat falls past within ~50px, untouched."""
+        if (
+            treat.last_miss_kind == 'bad'
+            and not treat.last_miss_touched
+            and treat.last_miss_x is not None
+            and abs(treat.last_miss_x - self.cat.pos_x) <= NEAR_MISS_THRESHOLD
+        ):
+            self.player.add_points(NEAR_MISS_POINTS)
+            self.score_value = self.player.points
+            return True
+        return False
 
     def end_game(self, reason):
         self.game_running = False
@@ -316,20 +425,32 @@ class PetunaGame:
 
             self.clock.tick(60)
 
-    def handle_eat(self):
-        """Score (or lose a life for) the treat currently touching the cat."""
-        if self.treat.kind == 'bad':
-            self.badSound()
-            self.player.lose_life()
+    def handle_eat(self, treat=None):
+        """Score (or lose a life for) the treat touching the cat."""
+        if treat is None:
+            treat = self.treat
+        treat.touched = True
+        if treat.kind == 'powerup':
+            self.eatSound()
+            self.activate_powerup(treat.power)
+            self.player.add_points(1 * self.score_multiplier())
+        elif treat.kind == 'bad':
+            if self.shield_active:
+                self.eatSound()  # shield absorbs the rotten treat
+            else:
+                self.badSound()
+                self.player.lose_life()
         else:
             self.eatSound()
-            self.player.add_points(self.treat.points)
+            self.player.add_points(treat.points * self.score_multiplier())
             # treats fall faster as you score — gentle difficulty ramp
             self.fall_speed = min(self.fall_speed + 0.15, 12)
-            self.treat.vy = self.fall_speed
+            for t in self.treats:
+                t.vy = self.fall_speed
         self.score_value = self.player.points
-        self.treat.rand_move()
-        self.treat.vy = self.fall_speed
+        treat.rand_move(others=self.treats, min_dist=MIN_SPAWN_DISTANCE)
+        treat.vy = self.fall_speed
+        self.ensure_treats()
 
     def run_game(self):
         """
@@ -339,21 +460,39 @@ class PetunaGame:
 
         self.reset_game()
         self.cat.set_graph()
-        self.treat.set_treat_pic()
+        for t in self.treats:
+            t.set_treat_pic()
+        # Fair opening spread: no overlapping spawns.
+        for i, t in enumerate(self.treats):
+            t.rand_move(
+                others=self.treats[:i], min_dist=MIN_SPAWN_DISTANCE
+            )
+            t.vy = self.fall_speed
 
         while self.game_running and self.app_running:
 
             tmr = self.run_timmer()
+            self.tick_power_timers()
             self.game.display.update()
             self.screen.fill((52, 106, 107))
             self.screen.blit(self.cat.catimg, self.cat.catrect)
-            self.screen.blit(self.treat.treatimg, self.treat.treatrect)
+            for t in self.treats:
+                self.screen.blit(t.treatimg, t.treatrect)
             self.drawing()
 
             self.draw_right(f'Time: {int(self.timer)}', self.wndw_w - 20, 50, 30)
 
-            self.treat.update()  # treats drop from the sky
-            self.treat.spawn()
+            for t in list(self.treats):
+                # Magnet: good treats drift toward the cat.
+                if self.magnet_active and t.kind in ('good', 'golden'):
+                    if t.pos_x < self.cat.pos_x:
+                        t.pos_x = min(t.pos_x + MAGNET_PULL, self.cat.pos_x)
+                    elif t.pos_x > self.cat.pos_x:
+                        t.pos_x = max(t.pos_x - MAGNET_PULL, self.cat.pos_x)
+                missed = t.update(speed_scale=self.speed_scale())
+                if missed:
+                    self.handle_near_miss(t)
+                t.spawn()
             self.cat.spawn()
 
             for event in self.game.event.get():
@@ -382,8 +521,10 @@ class PetunaGame:
                 if self.cat.pos_x < (self.wndw_w - self.cat.cat_H - self.velocity):
                     self.cat.pos_x += self.velocity
 
-            if self.cat.catrect.colliderect(self.treat.treatrect):
-                self.handle_eat()
+            for t in list(self.treats):
+                if self.cat.catrect.colliderect(t.treatrect):
+                    self.handle_eat(t)
+                    break
 
             if not self.player.is_alive():
                 self.end_game('Out of lives!')
