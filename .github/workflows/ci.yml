@@ -8,8 +8,8 @@ on:
 
 jobs:
   lint-test:
-    # Registered local runner: vmi3706455 (matched by its self-assigned name label).
-    runs-on: [self-hosted, vmi3706455]
+    # Local runner vmi3706455 (online; labels: self-hosted, Linux, X64).
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
 
