@@ -9,6 +9,15 @@ Game logic:
 
 ## How to run
 
+With [uv](https://docs.astral.sh/uv/) (recommended — pinned Python + locked deps):
+
+```bash
+uv sync
+uv run python run_game.py
+```
+
+Or with plain pip:
+
 ```bash
 pip install -r requirements.txt
 python3 run_game.py
