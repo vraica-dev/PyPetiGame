@@ -1,11 +1,12 @@
 import os
+import sqlite3
+
 import pygame
 
-from objects.petun_obj import PetunaObj
-from objects.treats_obj import TreatObj
-from objects.player_obj import PlayerObj
 from objects.cursor_obj import CursorObj
-import sqlite3
+from objects.petun_obj import PetunaObj
+from objects.player_obj import PlayerObj
+from objects.treats_obj import TreatObj
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 

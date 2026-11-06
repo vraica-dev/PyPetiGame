@@ -1,5 +1,6 @@
+
 import pygame
-import random
+
 
 class PetunaObj:
     def __init__(self):

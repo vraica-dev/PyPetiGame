@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  lint-test:
+    # Local runner: provide your own self-hosted runner labelled `pypetigame`.
+    # Register one per https://docs.github.com/en/actions/hosting-your-own-runners,
+    # e.g. `./run.sh` on the machine that should execute this workflow.
+    runs-on: [self-hosted, pypetigame]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install ruff
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Tests (pytest)
+        run: python -m pytest tests/ -q
