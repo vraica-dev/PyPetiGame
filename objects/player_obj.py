@@ -23,6 +23,9 @@ class PlayerObj:
     def lose_life(self):
         self.lives = max(0, self.lives - 1)
 
+    def gain_life(self, n=1, cap=9):
+        self.lives = min(cap, self.lives + n)
+
     def is_alive(self):
         return self.lives > 0
 

@@ -24,6 +24,64 @@ MAGNET_PULL = 7  # px/frame good treats slide toward the cat
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
+WAVE_DURATION = 20.0
+MAX_LIVES = 9
+
+_GOOD = 'static/images/treats.png'
+_GOLD = 'static/images/treats_2.png'
+_BAD = 'static/images/treats_bad.png'
+
+# Phase 3 progression: 3 x 20s waves. Each wave shifts the fall-speed base,
+# the treat mix (skin weights) and the background palette.
+WAVES = [
+    {
+        'name': 'Tea Time',
+        'base_speed': 5.0,
+        'bg': (52, 106, 107),
+        'skins': [
+            (_GOOD, 'good', 1),
+            (_GOOD, 'good', 1),
+            (_GOOD, 'good', 1),
+            (_GOLD, 'golden', 3),
+            (_GOLD, 'golden', 3),
+            (_BAD, 'bad', 0),
+            (_BAD, 'bad', 0),
+        ],
+    },
+    {
+        'name': 'Sugar Rush',
+        'base_speed': 7.0,
+        'bg': (126, 84, 150),
+        'skins': [
+            (_GOOD, 'good', 1),
+            (_GOOD, 'good', 1),
+            (_GOOD, 'good', 1),
+            (_GOLD, 'golden', 3),
+            (_GOLD, 'golden', 3),
+            (_GOLD, 'golden', 3),
+            (_GOLD, 'golden', 3),
+            (_BAD, 'bad', 0),
+        ],
+    },
+    {
+        'name': 'Rotten Storm',
+        'base_speed': 9.0,
+        'bg': (122, 52, 52),
+        'skins': [
+            (_GOOD, 'good', 1),
+            (_GOOD, 'good', 1),
+            (_GOOD, 'good', 1),
+            (_GOLD, 'golden', 3),
+            (_BAD, 'bad', 0),
+            (_BAD, 'bad', 0),
+            (_BAD, 'bad', 0),
+            (_BAD, 'bad', 0),
+        ],
+    },
+]
+
+MODES = ('classic', 'endless')
+
 
 class PetunaGame:
     def __init__(self):
@@ -71,6 +129,14 @@ class PetunaGame:
 
         self.init_timer = 60
         self.timer = float(self.init_timer)
+        self.mode = 'classic'  # 'classic' (60s timed) or 'endless'
+        self.wave_duration = WAVE_DURATION
+        self.wave_index = 0
+        self.elapsed = 0.0
+        self.treats_caught = 0
+        self.combo = 0
+        self.best_combo = 0
+        self.is_new_best = False
 
         self.velocity = 14
         # Bundled funny font (Luckiest Guy, OFL 1.1). Falls back to a
@@ -97,15 +163,68 @@ class PetunaGame:
         conn.execute(
             'CREATE TABLE IF NOT EXISTS scores (name TEXT NOT NULL, score INTEGER)'
         )
+        conn.execute(
+            'CREATE TABLE IF NOT EXISTS player_bests ('
+            'name TEXT PRIMARY KEY, best_score INTEGER DEFAULT 0, '
+            'longest_combo INTEGER DEFAULT 0, treats_caught INTEGER DEFAULT 0)'
+        )
         conn.commit()
+        # Migrate: every legacy scores row seeds a bests row (best-effort).
+        try:
+            conn.execute(
+                'INSERT OR IGNORE INTO player_bests (name, best_score) '
+                'SELECT name, score FROM scores'
+            )
+            conn.commit()
+        except sqlite3.Error:
+            pass
         return conn
 
     def read_scoreboard(self):
+        """Legacy top-5 view (backward compat): latest score per name."""
         c = self.db_conn.cursor()
         view_str = "SELECT * FROM scores ORDER BY score DESC LIMIT 5 "
         c.execute(view_str)
         res = c.fetchall()
         return res
+
+    def read_bests(self, limit=5):
+        """Persistent bests per player: best score, longest combo, caught."""
+        c = self.db_conn.cursor()
+        try:
+            c.execute(
+                'SELECT name, best_score, longest_combo, treats_caught '
+                'FROM player_bests ORDER BY best_score DESC LIMIT ?',
+                (limit,),
+            )
+            return c.fetchall()
+        except sqlite3.Error:
+            return []
+
+    def record_result(self, name_p, score_p, combo_p=0, caught_p=0):
+        """Max-merge a run into player_bests. Returns True if best improved."""
+        self.db_conn.execute(
+            'CREATE TABLE IF NOT EXISTS player_bests ('
+            'name TEXT PRIMARY KEY, best_score INTEGER DEFAULT 0, '
+            'longest_combo INTEGER DEFAULT 0, treats_caught INTEGER DEFAULT 0)'
+        )
+        c = self.db_conn.cursor()
+        c.execute(
+            'SELECT best_score FROM player_bests WHERE name = ?', (name_p,)
+        )
+        row = c.fetchone()
+        prev = row[0] if row else 0
+        c.execute(
+            'INSERT INTO player_bests (name, best_score, longest_combo, '
+            'treats_caught) VALUES (?, ?, ?, ?) '
+            'ON CONFLICT(name) DO UPDATE SET '
+            'best_score = max(best_score, excluded.best_score), '
+            'longest_combo = max(longest_combo, excluded.longest_combo), '
+            'treats_caught = max(treats_caught, excluded.treats_caught)',
+            (name_p, score_p, combo_p, caught_p),
+        )
+        self.db_conn.commit()
+        return score_p > (prev or 0)
 
     def write_scoreboard(self, name_p, score_p):
         c = self.db_conn.cursor()
@@ -166,29 +285,83 @@ class PetunaGame:
         )
         self.screen.blit(render_font, (self.menu_cursor.pos_x, self.menu_cursor.pos_y))
 
+    def effective_wave(self, index):
+        """Wave dict for any index; past the last wave endless escalates."""
+        if index < len(WAVES):
+            return WAVES[index]
+        last = WAVES[-1]
+        extra = index - (len(WAVES) - 1)
+        return {
+            'name': f"{last['name']} +{extra}",
+            'base_speed': last['base_speed'] + extra * 1.0,
+            'bg': last['bg'],
+            'skins': last['skins'],
+        }
+
+    def current_wave(self):
+        return self.effective_wave(self.wave_index)
+
+    def apply_wave(self, index):
+        wave = self.effective_wave(index)
+        self.fall_speed = min(wave['base_speed'], 12)
+        # Wave mix + speed apply to ALL concurrent treats.
+        for t in self.treats:
+            t.pool = wave['skins']
+            t.vy = self.fall_speed
+
+    def _update_wave(self):
+        new_index = int(self.elapsed // self.wave_duration)
+        if self.mode == 'classic':
+            new_index = min(new_index, len(WAVES) - 1)
+        if new_index != self.wave_index:
+            self.wave_index = new_index
+            self.apply_wave(new_index)
+            # Wave-clear bonus: +1 life refill, capped at MAX_LIVES.
+            self.player.gain_life(1, cap=MAX_LIVES)
+            return True
+        return False
+
     def draw_game_over(self):
         self.draw_centered('* GAME OVER *', 350, 72)
         self.draw_centered(self.game_over_reason, 430, 32)
         self.draw_centered(f'Final Score: {self.player.points}', 540, 40)
         self.draw_centered(f'Player:  {self.player.player_name}', 620, 40)
+        mode_label = self.mode.capitalize()
+        wave_label = self.current_wave()['name']
+        self.draw_centered(
+            f'{mode_label}  |  Wave: {wave_label}  |  '
+            f'Best combo: {self.best_combo}  |  Caught: {self.treats_caught}',
+            680, 26,
+        )
+        if self.is_new_best:
+            self.draw_centered('NEW BEST!', 725, 32)
 
     def drawing(self):
         self.draw_info()
         self.draw_info(f'Lives: {self.player.lives}', 10, 50, 30)
+        wave = self.current_wave()
+        self.draw_info(f"Wave: {wave['name']}", 10, 93, 30)
         if self.combo >= 2:
             self.draw_info(
-                f'COMBO x{self.combo_mult()}', 10, 95, 34, (255, 215, 0)
+                f'COMBO x{self.combo_mult()}', 10, 130, 34, (255, 215, 0)
             )
         self.draw_right(
             f'Player: {self.player.player_name}', self.wndw_w - 20, 10, 30
         )
         if self.muted:
-            # Stack below the combo readout so the two never overlap.
-            muted_y = 130 if self.combo >= 2 else 95
+            # Stack below the wave/combo readouts so they never overlap.
+            muted_y = 170 if self.combo >= 2 else 130
             self.draw_info('MUTED (M)', 10, muted_y, 30)
 
     def run_timmer(self, dt=1.0):
-        """Count the timer down. dt is in 60-FPS frames (1.0 ~= 1/60s)."""
+        """Advance the wave clock + count the timer down.
+
+        dt is in 60-FPS frames (1.0 ~= 1/60s); wave/elapsed bookkeeping
+        runs in real seconds so waves stay dt-correct at any frame rate."""
+        self.elapsed += dt / 60.0
+        self._update_wave()
+        if self.mode == 'endless':
+            return float('inf')  # no timer expiry in endless
         if self.timer > 0:
             self.timer -= dt / 60
             if self.timer < 0:
@@ -317,13 +490,21 @@ class PetunaGame:
     def reset_combo(self):
         self.combo = 0
 
-    def reset_game(self):
+    def reset_game(self, mode=None):
+        if mode in MODES:
+            self.mode = mode
         self.timer = float(self.init_timer)
         self.paused = False
         self.player.reset()
         self.score_value = 0
+        self.base_fall_speed = float(WAVES[0]['base_speed'])
         self.fall_speed = self.base_fall_speed
         self.game_over_reason = ''
+        self.wave_index = 0
+        self.elapsed = 0.0
+        self.treats_caught = 0
+        self.best_combo = 0
+        self.is_new_best = False
         self.combo = 0
         self.bursts = []
         self.juice = JuiceState()
@@ -341,6 +522,8 @@ class PetunaGame:
         self.treat = self.treats[0]
         for t in self.treats:
             t.set_bounds(self.wndw_w, self.wndw_h)
+            t.pool = WAVES[0]['skins']
+            t.vy = self.fall_speed
             t.vy = self.fall_speed
 
     # -- Phase 2: depth ---------------------------------------------
@@ -357,6 +540,7 @@ class PetunaGame:
         """Grow the treat list toward the desired count (never shrinks)."""
         while len(self.treats) < self.desired_treat_count():
             t = TreatObj(self.wndw_w, self.wndw_h)
+            t.pool = self.current_wave()['skins']  # wave mix for late adds
             t.vy = self.fall_speed
             t.set_treat_pic()
             # Fair spawn: keep a min x-distance from siblings.
@@ -421,6 +605,12 @@ class PetunaGame:
         self.game_running = False
         self.game_over_reason = reason
         self.write_scoreboard(self.player.player_name, self.player.points)
+        self.is_new_best = self.record_result(
+            self.player.player_name,
+            self.player.points,
+            self.best_combo,
+            self.treats_caught,
+        )
         self.game_over()
 
     def show_scoreboard(self):
@@ -445,6 +635,15 @@ class PetunaGame:
             for p, s in player_details:
                 self.draw_info(f'{p}     --      {s}', x, y, 30)
                 y += 45
+
+            y += 20
+            self.draw_info('Bests: name  score  combo  caught', x, y, 26)
+            y += 40
+            for name, best, combo, caught in self.read_bests():
+                self.draw_info(
+                    f'{name}  {best}  x{combo}  {caught}', x, y, 26
+                )
+                y += 36
 
             self.game.display.update()
             self.clock.tick(60)
@@ -486,13 +685,18 @@ class PetunaGame:
         :return: na
         """
         cx = self.wndw_w // 2
-        rows = [430, 510, 590]
-        items = ['START GAME', 'PLAYER NAME', 'SCOREBOARD']
+        rows = [430, 510, 590, 670]
         sel = 0
         fs = True
         while fs and self.app_running:
             self.screen.fill((60, 60, 60))
 
+            items = [
+                'START GAME',
+                f'MODE: {self.mode.upper()}',
+                'PLAYER NAME',
+                'SCOREBOARD',
+            ]
             self.draw_centered('* Welcome To Petunia Game *', 180, 64)
             self.draw_centered('Catch treats, dodge the rotten ones!  9 lives.', 250, 28)
             for i, item in enumerate(items):
@@ -518,8 +722,12 @@ class PetunaGame:
                             self.game_running = True
                             self.run_game()
                         elif sel == 1:
-                            self.change_player_name()
+                            self.mode = (
+                                'endless' if self.mode == 'classic' else 'classic'
+                            )
                         elif sel == 2:
+                            self.change_player_name()
+                        elif sel == 3:
                             self.show_scoreboard()
 
             self.game.display.update()
@@ -571,6 +779,8 @@ class PetunaGame:
             self.eatSound()
             self.activate_powerup(treat.power)
             self.combo += 1  # power-up keeps the streak alive
+            self.best_combo = max(self.best_combo, self.combo)
+            self.treats_caught += 1
             if self.combo_mult() >= 2:
                 self.comboSound()  # combo-up fanfare on top of the catch
             self.player.add_points(1 * self.combo_mult() * frenzy)
@@ -594,6 +804,8 @@ class PetunaGame:
                 )
         else:
             self.combo += 1  # consecutive good catch builds the combo
+            self.best_combo = max(self.best_combo, self.combo)
+            self.treats_caught += 1
             mult = self.combo_mult() * frenzy
             if treat.kind == 'golden':
                 self.goldenSound()  # distinct path from normal catch
@@ -662,7 +874,7 @@ class PetunaGame:
             self.tick_power_timers(dt / 60.0)  # power timers run in seconds
             now_s = self.game.time.get_ticks() / 1000.0
             self.game.display.update()
-            self.screen.fill((52, 106, 107))
+            self.screen.fill(self.current_wave()['bg'])
             ox, oy = self.juice.offset()  # rotten-eat screen shake
             self.screen.blit(
                 self.cat.catimg, self.cat.catrect.move(ox, oy)
@@ -674,7 +886,16 @@ class PetunaGame:
             self.juice.draw_flash(self.screen)
             self.drawing()
 
-            self.draw_right(f'Time: {int(self.timer)}', self.wndw_w - 20, 50, 30)
+            if self.mode == 'endless':
+                mins, secs = divmod(int(self.elapsed), 60)
+                self.draw_right(
+                    f'{mins}:{secs:02d}  W{self.wave_index + 1}',
+                    self.wndw_w - 20, 50, 30,
+                )
+            else:
+                self.draw_right(
+                    f'Time: {int(self.timer)}', self.wndw_w - 20, 50, 30
+                )
             self.draw_centered('P: pause   M: mute', 40, 22)
 
             for t in list(self.treats):
@@ -739,7 +960,7 @@ class PetunaGame:
                 self.end_game('Out of lives!')
                 return
 
-            if tmr == 0:
+            if self.mode == 'classic' and tmr == 0:
                 self.end_game("Time's up!")
                 return
 

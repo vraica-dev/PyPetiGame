@@ -62,6 +62,8 @@ class TreatObj:
 
         self.vy = 5  # fall speed, px per 60-FPS frame; raised as you score
 
+        self.pool = None  # optional skin pool (per-wave mix); None = SKINS
+
         self.selected_skin = None
         self.kind = 'good'
         self.points = 1
@@ -106,16 +108,21 @@ class TreatObj:
         self.base_img = img
         return img
 
-    def set_treat_pic(self, force_kind=None, force_power=None):
-        """Roll a new skin. Keeps the original no-arg behaviour."""
+    def set_treat_pic(self, force_kind=None, force_power=None, pool=None):
+        """Roll a new skin. Keeps the original no-arg behaviour.
+
+        ``pool`` selects the skin mix (per-wave pool); defaults to this
+        treat's own pool, falling back to SKINS. Golden rolls in any pool
+        can still convert to power-ups (golden-only window)."""
+        source = pool if pool is not None else (self.pool or SKINS)
         if force_kind is not None:
-            matches = [s for s in SKINS if s[1] == force_kind]
-            rndm_pic, kind, points = random.choice(matches)
+            matches = [s for s in source if s[1] == force_kind]
+            rndm_pic, kind, points = random.choice(matches or SKINS)
         elif force_power is not None:
             self.set_powerup(force_power)
             return
         else:
-            rndm_pic, kind, points = random.choice(SKINS)
+            rndm_pic, kind, points = random.choice(source)
 
         # Reset Phase 2 flags, then roll variety.
         self.power = None
@@ -247,7 +254,7 @@ class TreatObj:
         self.pos_x = best_x
         self.pos_y = -40
         self.touched = False
-        self.set_treat_pic()
+        self.set_treat_pic(pool=self.pool)
 
     def update(self, dt=1.0, speed_scale=1.0):
         """Fall one dt-scaled step (dt in 60-FPS frames, slowmo via
