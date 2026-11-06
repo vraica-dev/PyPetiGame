@@ -8,10 +8,8 @@ on:
 
 jobs:
   lint-test:
-    # Local runner: provide your own self-hosted runner labelled `pypetigame`.
-    # Register one per https://docs.github.com/en/actions/hosting-your-own-runners,
-    # e.g. `./run.sh` on the machine that should execute this workflow.
-    runs-on: [self-hosted, pypetigame]
+    # Registered local runner: vmi3706455 (matched by its self-assigned name label).
+    runs-on: [self-hosted, vmi3706455]
     steps:
       - uses: actions/checkout@v4
 
