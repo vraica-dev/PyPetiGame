@@ -158,6 +158,19 @@ def test_scoreboard_returns_top5_by_score_desc(memdb):
     assert [s for _, s in rows] == [6, 5, 4, 3, 2]
 
 
+def test_funny_font_loads_and_renders(pg):
+    import os
+    assert os.path.isfile(pg.font_path)  # bundled Luckiest Guy TTF
+    f1, f2 = pg.font(40), pg.font(40)
+    assert f1 is f2  # cached
+    surf = f1.render('Petunia!', True, (255, 255, 255))
+    assert surf.get_width() > 0 and surf.get_height() > 0
+    # right-alignment pins the right edge regardless of text width
+    r1 = pg.font(30).render('Time: 9', True, (255, 255, 255)).get_rect()
+    r2 = pg.font(30).render('Time: 60', True, (255, 255, 255)).get_rect()
+    assert r1.width != r2.width  # widths differ, so fixed-x blits would jitter
+
+
 def test_app_boots_with_db_table_and_basedir(pg):
     assert os.getcwd() == game.BASE_DIR
     cur = pg.db_conn.cursor()

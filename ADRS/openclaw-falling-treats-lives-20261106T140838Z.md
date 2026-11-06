@@ -36,6 +36,22 @@ makes it an actual dodge-and-catch game on a modern 1080p window.
   updated; `screenshots/*_1080p.png` proofs (gameplay, game-over, menu).
 - **ADR**: this file.
 
+## Follow-up: funny font + alignment pass (same PR)
+
+- **Inspection findings**: code requested `'comicsans'` via
+  `pygame.font.SysFont`, but that font doesn't exist on most Linux
+  systems — pygame silently fell back to its built-in default font, so
+  text looked different on every machine. HUD right column
+  (`Player:`/`Time:`) was blitted at a fixed x, so values changing width
+  made the column jitter.
+- **Fix**: bundled `static/fonts/LuckiestGuy-Regular.ttf`
+  (SIL OFL 1.1, via Fontsource CDN) + cached `PetunaGame.font(size)`
+  helper with SysFont fallback; all screens use it. New `draw_right()`
+  pins `Player:`/`Time:` to the right margin. Menu/game-over titles
+  bumped up (all-caps display face reads small otherwise).
+- **Tests**: +1 (`test_funny_font_loads_and_renders` — file exists,
+  cache works, width variance justifies right-alignment). 15/15 green.
+
 ## Alternatives considered
 
 - Multiple simultaneous falling treats: rejected for this PR — single-treat

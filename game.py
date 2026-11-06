@@ -45,6 +45,12 @@ class PetunaGame:
         self.timer = float(self.init_timer)
 
         self.velocity = 14
+        # Bundled funny font (Luckiest Guy, OFL 1.1). Falls back to a
+        # system font if the file ever goes missing.
+        self.font_path = os.path.join(
+            BASE_DIR, 'static', 'fonts', 'LuckiestGuy-Regular.ttf'
+        )
+        self._fonts = {}
         self.base_fall_speed = 5
         self.fall_speed = self.base_fall_speed
         self.score_value = 0
@@ -81,8 +87,21 @@ class PetunaGame:
 
         self.db_conn.commit()
 
+    def font(self, font_size):
+        """Cached funny font; system-font fallback if bundled file is missing."""
+        if font_size not in self._fonts:
+            try:
+                self._fonts[font_size] = self.game.font.Font(
+                    self.font_path, font_size
+                )
+            except OSError:
+                self._fonts[font_size] = self.game.font.SysFont(
+                    'comicsans', font_size, 1
+                )
+        return self._fonts[font_size]
+
     def draw_info(self, text_line=None, x=None, y=None, font_size=25):
-        font = self.game.font.SysFont('comicsans', font_size, 1)
+        font = self.font(font_size)
         if text_line is None and x is None and y is None:
             render = font.render(f'Score: {self.score_value}', True, (255, 255, 255))
             self.screen.blit(render, (7, 7))
@@ -91,26 +110,35 @@ class PetunaGame:
             self.screen.blit(render, (x, y))
 
     def draw_centered(self, text, y, font_size=36):
-        font = self.game.font.SysFont('comicsans', font_size, 1)
-        render = font.render(text, True, (255, 255, 255))
+        render = self.font(font_size).render(text, True, (255, 255, 255))
         rect = render.get_rect(center=(self.wndw_w // 2, y))
         self.screen.blit(render, rect)
 
+    def draw_right(self, text, right, y, font_size=28):
+        """Right-aligned text: right edge fixed, so values changing width
+        (e.g. Time: 9 vs Time: 60) don't make the column jitter."""
+        render = self.font(font_size).render(text, True, (255, 255, 255))
+        rect = render.get_rect(right=right, top=y)
+        self.screen.blit(render, rect)
+
     def draw_cursor(self, txt):
-        font = self.game.font.SysFont('comicsans', self.menu_cursor.font_size, 1)
-        render_font = font.render(txt, True, (255, 255, 255))
+        render_font = self.font(self.menu_cursor.font_size).render(
+            txt, True, (255, 255, 255)
+        )
         self.screen.blit(render_font, (self.menu_cursor.pos_x, self.menu_cursor.pos_y))
 
     def draw_game_over(self):
-        self.draw_centered('* G A M E O V E R *', 350, 48)
+        self.draw_centered('* GAME OVER *', 350, 72)
         self.draw_centered(self.game_over_reason, 430, 32)
         self.draw_centered(f'Final Score: {self.player.points}', 540, 40)
         self.draw_centered(f'Player:  {self.player.player_name}', 620, 40)
 
     def drawing(self):
         self.draw_info()
-        self.draw_info(f'Lives: {self.player.lives}', 10, 50, 28)
-        self.draw_info(f'Player: {self.player.player_name}', self.wndw_w - 230, 10, 28)
+        self.draw_info(f'Lives: {self.player.lives}', 10, 50, 30)
+        self.draw_right(
+            f'Player: {self.player.player_name}', self.wndw_w - 20, 10, 30
+        )
 
     def run_timmer(self):
         if self.timer > 0:
@@ -227,7 +255,7 @@ class PetunaGame:
         while fs and self.app_running:
             self.screen.fill((60, 60, 60))
 
-            self.draw_centered('* Welcome To Petunia Game *', 180, 44)
+            self.draw_centered('* Welcome To Petunia Game *', 180, 64)
             self.draw_centered('Catch treats, dodge the rotten ones!  9 lives.', 250, 28)
             for i, item in enumerate(items):
                 self.draw_info(f'  {item} ', cx - 160, rows[i], 34)
@@ -322,7 +350,7 @@ class PetunaGame:
             self.screen.blit(self.treat.treatimg, self.treat.treatrect)
             self.drawing()
 
-            self.draw_info(f'Time: {int(self.timer)}', self.wndw_w - 230, 50, 28)
+            self.draw_right(f'Time: {int(self.timer)}', self.wndw_w - 20, 50, 30)
 
             self.treat.update()  # treats drop from the sky
             self.treat.spawn()
