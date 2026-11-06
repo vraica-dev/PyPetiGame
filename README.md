@@ -1,8 +1,12 @@
+[![CI](https://github.com/vraica-dev/pypetigame/actions/workflows/ci.yml/badge.svg)](https://github.com/vraica-dev/pypetigame/actions/workflows/ci.yml)
+
 First attempt of creating a game in Python using the PyGame framework.
 
 Tech used:
-  - Python 3
-  - PyGame (pygame-ce works too)
+  - Python 3.12 (pinned via `.python-version`)
+  - pygame-ce
+  - uv for packaging (`pyproject.toml` + `uv.lock`)
+  - pytest + ruff (dev), enforced by CI on the local runner `vmi3706455`
 
 Game logic:
   - catch as many treats as you can while the clock is still ticking
@@ -43,5 +47,16 @@ Game over:
 
 Scoring: normal treat = 1 pt, golden treat (`treats_2.png`) = 3 pts.
 Game length: 60 seconds. Scores are saved in `scoreboard_db/scores_db` (SQLite).
+
+## Development
+
+```bash
+uv sync --group dev   # install runtime + dev deps
+uv run ruff check .   # lint
+uv run pytest -q      # tests (10 tests in tests/)
+```
+
+Every push / PR to `master` runs the same two commands as CI
+(`.github/workflows/ci.yml`) on the local runner.
 
 Please consider this is not the final version. Multiple finetunnings are still necessary.
